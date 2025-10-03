@@ -821,12 +821,25 @@ def optimise(demand_df: pd.DataFrame,
 
         # Try ≤1 bank, else ≤2
         res = solve_with_bank_limit(1)
-        if not res[0]:
+        
+        def _is_bad(solution_tuple):
+            df, cost = solution_tuple
+            # infeasible returns (None, None)
+            if df is None:
+                return True
+            # if solver returned an empty allocation table, treat as infeasible too
+            if isinstance(df, pd.DataFrame) and df.empty:
+                return True
+            return False
+        
+        if _is_bad(res):
             res = solve_with_bank_limit(2)
-            if not res[0]:
+            if _is_bad(res):
                 raise RuntimeError("Infeasible even with two banks.")
+        
         alloc_df, total_cost = res
         return alloc_df, total_cost, chosen_size
+
 
     # -------- Greedy fallback (no PuLP): prefer 1 bank, else best 2 banks --------
     # Score banks by cheapest average unit price across all options
