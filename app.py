@@ -1,12 +1,13 @@
-# app.py — BNG Optimiser (Standalone)
-# - login wall (secrets-first fallback to WC0323 / Wimbourne)
-# - dynamic Banks LPA/NCA enrichment (lat/lon -> postcode -> address)
-# - POST helper to avoid 414
-# - instant map on Locate (no need to click Optimise)
-# - normalised tiering (local/adjacent/far)
-# - official trading rules + broadened candidates for Low/Medium
-# - LP (PuLP) with greedy fallback
-# - diagnostics + tier breakdown
+# app.py — BNG Optimiser (Standalone, business rules v2)
+# - Login wall (secrets-first fallback to WC0323/Wimbourne)
+# - Dynamic Banks LPA/NCA enrichment (lat/lon -> postcode -> address)
+# - Robust HTTP + POST to avoid 414
+# - Instant map on Locate
+# - Normalised tiering (local/adjacent/far); tier only selects price (no SRM math)
+# - Official trading rules; broadened candidates for Low/Medium
+# - NEW: Prefer 1 bank (≤2 banks max). MILP with bank binaries if PuLP present; greedy fallback otherwise
+# - NEW: Medium shortage → auto "Orchard+Scrub" paired option (0.5+0.5 per unit, price averaged)
+# - Deep diagnostics
 
 import json
 import re
@@ -25,7 +26,6 @@ import folium
 # ========= Page =========
 st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
 st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
-st.caption("Upload backend workbook, locate target site, and optimise supply with SRM, official distinctiveness trading rules, and TradingRules.")
 
 # ========= Safe strings =========
 def sstr(x) -> str:
@@ -436,27 +436,22 @@ if (target_lat is not None) and (target_lon is not None):
     st.markdown("### Map")
     st_folium(fmap, height=420, returned_objects=[], use_container_width=True)
 
-# =========================
-# Demand builder (interactive rows with autosuggest)
-# =========================
+# ========= Demand builder =========
 st.subheader("2) Demand (units required)")
 
 def init_demand_state():
     if "demand_rows" not in st.session_state:
-        # start with one empty row
         st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
         st.session_state._next_row_id = 2
 
 init_demand_state()
 
-# Choices come from the catalog (type to search)
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()]
 )
 
 with st.container(border=True):
     st.markdown("**Add habitats one by one** (type to search the catalog):")
-
     to_delete = []
     for idx, row in enumerate(st.session_state.demand_rows):
         c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
@@ -474,11 +469,8 @@ with st.container(border=True):
         with c3:
             if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
                 to_delete.append(row["id"])
-
-    # remove any rows requested for deletion
     if to_delete:
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
-
     cc1, cc2, cc3 = st.columns([0.4, 0.35, 0.25])
     with cc1:
         if st.button("➕ Add habitat"):
@@ -488,22 +480,20 @@ with st.container(border=True):
             st.session_state._next_row_id += 1
     with cc2:
         if st.button("🧹 Clear all"):
-            init_demand_state()
-            st.rerun()
+            init_demand_state(); st.rerun()
     with cc3:
         total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
         st.metric("Total units", f"{total_units:.2f}")
 
-# Build demand_df for downstream code
 demand_df = pd.DataFrame(
     [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
      for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
 )
 
-if demand_df.empty:
-    st.info("Add at least one habitat and units to continue.", icon="ℹ️")
-else:
+if not demand_df.empty:
     st.dataframe(demand_df, use_container_width=True, hide_index=True)
+else:
+    st.info("Add at least one habitat and units to continue.", icon="ℹ️")
 
 # ========= Official rules =========
 def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
@@ -531,17 +521,27 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
     higher_distinctiveness = (s_val > d_val)
     return bool(same_group or higher_distinctiveness)
 
-# ========= Options builder =========
+# ========= Options builder (no SRM math) =========
+def select_size_for_demand(demand_df: pd.DataFrame, pricing_df: pd.DataFrame) -> str:
+    present = pricing_df["contract_size"].drop_duplicates().tolist()
+    total = float(demand_df["units_required"].sum())
+    return select_contract_size(total, present)
+
 def prepare_options(demand_df: pd.DataFrame,
                     chosen_size: str,
                     target_lpa: str, target_nca: str,
                     lpa_neigh: List[str], nca_neigh: List[str],
-                    lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[List[dict], Dict[str, float]]:
+                    lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[List[dict], Dict[str, float], Dict[str, str]]:
+    """Build options. Each option carries:
+       - demand_idx, demand_habitat, bank_id, supply_habitat, tier, unit_price
+       - stock_use: {stock_id: coefficient per 1 unit allocated}  (normal=1.0; paired=0.5 on two stocks)
+       Returns: (options, stock_caps, stock_bank_map)
+    """
     Banks = backend["Banks"].copy()
     Pricing = backend["Pricing"].copy()
     Catalog = backend["HabitatCatalog"].copy()
     Stock = backend["Stock"].copy()
-    SRM = backend["SRM"].copy()
+    SRM = backend["SRM"].copy()  # still used to know tier names if needed
     Trading = backend.get("TradingRules", pd.DataFrame())
 
     # Clean string columns
@@ -556,9 +556,10 @@ def prepare_options(demand_df: pd.DataFrame,
             for c in cols:
                 if c in df.columns: df[c] = df[c].map(sstr)
 
-    srm_map = {sstr(r["tier"]): float(r["multiplier"]) for _, r in SRM.iterrows()}
+    # Merge stock context
     stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
                       .merge(Catalog, on="habitat_name", how="left")
+
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
 
     # Trading index
@@ -572,13 +573,34 @@ def prepare_options(demand_df: pd.DataFrame,
                 "companion_ratio": float(r.get("companion_ratio", 0) or 0.0),
             })
 
-    options, remaining = [], {}
+    # Find catalog names for pairing (Traditional Orchard and Mixed Scrub)
+    def find_catalog_name(substr: str) -> Optional[str]:
+        m = Catalog[Catalog["habitat_name"].str.contains(substr, case=False, na=False)]
+        return sstr(m["habitat_name"].iloc[0]) if not m.empty else None
+
+    ORCHARD_NAME = find_catalog_name("Traditional Orchard")
+    SCRUB_NAME   = find_catalog_name("Mixed Scrub")
+
     def dval(name: Optional[str]) -> float:
         key = sstr(name)
         return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
 
+    # Build normal options first
+    options: List[dict] = []
+    stock_caps: Dict[str, float] = {}
+    stock_bank: Dict[str, str] = {}  # stock_id -> bank_id
+
+    # record caps
+    for _, s in Stock.iterrows():
+        stock_caps[sstr(s["stock_id"])] = float(s.get("quantity_available", 0) or 0.0)
+        stock_bank[sstr(s["stock_id"])] = sstr(s["bank_id"])
+
+    # Precompute normal effective capacity per demand to know if we need pairing for "medium"
+    normal_eff_cap: Dict[int, float] = {i: 0.0 for i in demand_df.index}
+
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
+        required = float(drow["units_required"])
         dcat = Catalog[Catalog["habitat_name"] == dem_hab]
         d_broader = sstr(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
         d_dist = sstr(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
@@ -587,18 +609,19 @@ def prepare_options(demand_df: pd.DataFrame,
         drow["distinctiveness_name"] = d_dist
 
         cand_parts = []
-        # 1) explicit rules
+
+        # Explicit rules (always allowed)
         for rule in trade_idx.get(dem_hab, []):
-            sh = rule["supply_habitat"]
-            s_min = rule["min_distinctiveness_name"]
+            sh = rule["supply_habitat"]; s_min = rule["min_distinctiveness_name"]
             df_s = stock_full[stock_full["habitat_name"] == sh].copy()
             if s_min:
                 df_s = df_s[df_s["distinctiveness_name"].map(lambda x: dval(x)) >= dval(s_min)]
-            df_s["companion_habitat"] = rule["companion_habitat"]
-            df_s["companion_ratio"] = rule["companion_ratio"]
-            if not df_s.empty:
-                cand_parts.append(df_s)
-        # 2) implicit (official rules)
+            # Companion rules are handled in legacy path; we avoid companions now (pairing is explicit below)
+            df_s["companion_habitat"] = ""
+            df_s["companion_ratio"] = 0.0
+            if not df_s.empty: cand_parts.append(df_s)
+
+        # Implicit (official) when no explicit
         if not cand_parts:
             d_key = d_dist.lower()
             if d_key == "low":
@@ -609,17 +632,23 @@ def prepare_options(demand_df: pd.DataFrame,
                 df_s = stock_full[same_group | higher_dist].copy()
             else:
                 df_s = stock_full[stock_full["habitat_name"] == dem_hab].copy()
-            df_s["companion_habitat"] = ""
-            df_s["companion_ratio"] = 0.0
-            if not df_s.empty:
-                cand_parts.append(df_s)
+            df_s["companion_habitat"] = ""; df_s["companion_ratio"] = 0.0
+            if not df_s.empty: cand_parts.append(df_s)
 
         if not cand_parts:
             continue
 
         candidates = pd.concat(cand_parts, ignore_index=True)
 
+        kept_rows = []
         for _, s in candidates.iterrows():
+            # Official rule check (unless explicit TradingRules – we already neutralised companions)
+            explicit = (dem_hab in trade_idx)
+            if not enforce_catalog_rules_official(
+                pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
+                s, dist_levels_map, explicit_rule=explicit
+            ):
+                continue
             tier = tier_for_bank(
                 s.get("lpa_name",""), s.get("nca_name",""),
                 target_lpa, target_nca,
@@ -633,174 +662,251 @@ def prepare_options(demand_df: pd.DataFrame,
             ]
             if price_row.empty:
                 continue
-            explicit = (dem_hab in trade_idx)
-            if not enforce_catalog_rules_official(
-                pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
-                s,
-                dist_levels_map,
-                explicit_rule=explicit
-            ):
-                continue
             unit_price = float(price_row["price"].iloc[0])
+            stock_id = sstr(s["stock_id"])
             cap = float(s.get("quantity_available", 0) or 0.0)
+            if cap <= 0: 
+                continue
             opt = {
+                "type": "normal",
                 "demand_idx": di,
                 "demand_habitat": dem_hab,
                 "bank_id": s["bank_id"],
-                "stock_id": sstr(s["stock_id"]),
                 "supply_habitat": s["habitat_name"],
                 "tier": tier,
                 "unit_price": unit_price,
-                "srm_mult": float(srm_map.get(tier, 0.5)),
-                "stock_cap": cap,
-                "companion_habitat": sstr(s.get("companion_habitat")),
-                "companion_ratio": float(s.get("companion_ratio",0.0) or 0.0),
+                "stock_use": {stock_id: 1.0},   # 1 unit consumes 1 from this stock
             }
             options.append(opt)
-            remaining[opt["stock_id"]] = max(remaining.get(opt["stock_id"], 0.0), cap)
+            kept_rows.append(opt)
+            normal_eff_cap[di] += cap  # each unit = 1 effective (no SRM math)
 
-    return options, remaining
+        # If this is a MEDIUM demand and normal effective capacity < required,
+        # add Orchard+Scrub "paired" options from banks that have BOTH stocks.
+        if d_dist.lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
+            if normal_eff_cap[di] + 1e-9 < required:
+                # Build available bank-> (orchard price, orchard stock_id, cap), (scrub price, scrub stock_id, cap)
+                # Use same tier per bank
+                banks = stock_full["bank_id"].dropna().unique().tolist()
+                for b in banks:
+                    orch_rows = stock_full[(stock_full["bank_id"] == b) &
+                                           (stock_full["habitat_name"] == ORCHARD_NAME)]
+                    scrub_rows = stock_full[(stock_full["bank_id"] == b) &
+                                            (stock_full["habitat_name"] == SCRUB_NAME)]
+                    if orch_rows.empty or scrub_rows.empty: 
+                        continue
+                    # We’ll allow multiple rows; pick each stock row separately as they have distinct stock_ids
+                    for _, o in orch_rows.iterrows():
+                        for _, s in scrub_rows.iterrows():
+                            # tier and prices
+                            tier_b = tier_for_bank(
+                                s.get("lpa_name",""), s.get("nca_name",""),
+                                target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+                            )
+                            pr_o = pricing_cs[(pricing_cs["bank_id"] == b) &
+                                              (pricing_cs["habitat_name"] == ORCHARD_NAME) &
+                                              (pricing_cs["tier"] == tier_b)]
+                            pr_s = pricing_cs[(pricing_cs["bank_id"] == b) &
+                                              (pricing_cs["habitat_name"] == SCRUB_NAME) &
+                                              (pricing_cs["tier"] == tier_b)]
+                            if pr_o.empty or pr_s.empty:
+                                continue
+                            price = 0.5 * float(pr_o["price"].iloc[0]) + 0.5 * float(pr_s["price"].iloc[0])
+                            stock_id_o = sstr(o["stock_id"])
+                            stock_id_s = sstr(s["stock_id"])
+                            cap_o = float(o.get("quantity_available", 0) or 0.0)
+                            cap_s = float(s.get("quantity_available", 0) or 0.0)
+                            if cap_o <= 0 or cap_s <= 0:
+                                continue
+                            # 1 paired unit consumes 0.5 from each
+                            opt = {
+                                "type": "paired",
+                                "demand_idx": di,
+                                "demand_habitat": dem_hab,
+                                "bank_id": b,
+                                "supply_habitat": f"{ORCHARD_NAME} + {SCRUB_NAME}",
+                                "tier": tier_b,
+                                "unit_price": price,
+                                "stock_use": {stock_id_o: 0.5, stock_id_s: 0.5}
+                            }
+                            options.append(opt)
+
+    return options, stock_caps, stock_bank
 
 # ========= Optimiser =========
-def select_size_for_demand(demand_df: pd.DataFrame, pricing_df: pd.DataFrame) -> str:
-    present = pricing_df["contract_size"].drop_duplicates().tolist()
-    total = float(demand_df["units_required"].sum())
-    return select_contract_size(total, present)
-
 def optimise(demand_df: pd.DataFrame,
              target_lpa: str, target_nca: str,
              lpa_neigh: List[str], nca_neigh: List[str],
              lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[pd.DataFrame, float, str]:
     chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
-    options, remaining = prepare_options(demand_df, chosen_size, target_lpa, target_nca,
-                                         lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm)
+    options, stock_caps, stock_bank = prepare_options(
+        demand_df, chosen_size, target_lpa, target_nca,
+        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+    )
     if not options:
-        raise RuntimeError("No feasible options. Check names, rules, prices, or stock availability.")
+        raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
 
+    # Map useful sets
+    idx_by_dem: Dict[int, List[int]] = {}
+    for i, opt in enumerate(options):
+        idx_by_dem.setdefault(opt["demand_idx"], []).append(i)
+
+    # MILP with bank binaries when PuLP present
     if _HAS_PULP:
-        prob = pulp.LpProblem("BNG_Allocation", pulp.LpMinimize)
-        x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
-        prob += pulp.lpSum([opt["unit_price"] * x[i] for i, opt in enumerate(options)])
+        def solve_with_bank_limit(max_banks: int) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
+            prob = pulp.LpProblem("BNG_Allocation_MILP", pulp.LpMinimize)
+            x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
 
-        # Demand constraints (primary + companions)
-        for di, drow in demand_df.iterrows():
-            base = pulp.lpSum([x[i] * options[i]["srm_mult"] for i, _opt in enumerate(options) if _opt["demand_idx"] == di])
-            comp = pulp.lpSum([
-                x[j] * options[j]["companion_ratio"] * options[j]["srm_mult"]
-                for j, _opt in enumerate(options)
-                if _opt["companion_habitat"] == drow["habitat_name"]
-            ])
-            prob += (base + comp >= float(drow["units_required"])), f"demand_{di}"
+            # Bank binaries
+            banks = sorted({opt["bank_id"] for opt in options})
+            y = {b: pulp.LpVariable(f"y_{b}", lowBound=0, upBound=1, cat="Binary") for b in banks}
 
-        # Stock caps
-        from collections import defaultdict
-        caps = defaultdict(list)
-        for i, opt in enumerate(options):
-            caps[opt["stock_id"]].append(i)
-        for stock_id, idxs in caps.items():
-            cap_val = options[idxs[0]]["stock_cap"]
-            prob += pulp.lpSum([x[i] for i in idxs]) <= cap_val, f"cap_{stock_id}"
+            # Objective: cost + tiny penalty for number of banks
+            eps = 1e-4
+            prob += pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))]) + \
+                    eps * pulp.lpSum([y[b] for b in banks])
 
-        prob.solve(pulp.PULP_CBC_CMD(msg=False))
-        status_str = pulp.LpStatus[prob.status]
-        if status_str not in ("Optimal", "Feasible"):
-            # Greedy fallback
-            rows, total_cost = [], 0.0
-            from collections import defaultdict
-            remain = defaultdict(float)
-            for opt in options:
-                remain[opt["stock_id"]] = max(remain[opt["stock_id"]], opt["stock_cap"])
+            # Link each option to its bank usage
+            # Big-M per bank: sum of all stock caps of that bank
+            M_bank: Dict[str, float] = {b: 0.0 for b in banks}
+            for sid, cap in stock_caps.items():
+                b = stock_bank.get(sid, "")
+                if b in M_bank:
+                    M_bank[b] += cap
+            for i, opt in enumerate(options):
+                prob += x[i] <= M_bank[opt["bank_id"]] * y[opt["bank_id"]], f"link_{i}"
+
+            # Bank limit
+            prob += pulp.lpSum([y[b] for b in banks]) <= max_banks, "bank_limit"
+
+            # Demand constraints: each demand needs its required units
             for di, drow in demand_df.iterrows():
-                rem_need = float(drow["units_required"])
-                cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di]
-                cand.sort(key=lambda i: options[i]["unit_price"] / max(options[i]["srm_mult"], 1e-9))
-                for i in cand:
-                    if rem_need <= 1e-9: break
-                    opt = options[i]
-                    cap = remain.get(opt["stock_id"], 0.0)
-                    if cap <= 1e-9: continue
-                    need = rem_need / max(opt["srm_mult"], 1e-9)
-                    take = min(cap, need)
-                    if take <= 1e-9: continue
-                    remain[opt["stock_id"]] -= take
-                    eff = take * opt["srm_mult"]
-                    rem_need -= eff
-                    cost = take * opt["unit_price"]
-                    rows.append({
-                        "demand_habitat": opt["demand_habitat"],
-                        "bank_id": opt["bank_id"],
-                        "stock_id": opt["stock_id"],
-                        "supply_habitat": opt["supply_habitat"],
-                        "tier": opt["tier"],
-                        "units_supplied": take,
-                        "effective_units": eff,
-                        "unit_price": opt["unit_price"],
-                        "cost": cost
-                    })
-                if rem_need > 1e-6:
-                    raise RuntimeError(f"Optimiser status: {status_str} (and greedy short by {rem_need:.3f})")
-            total_cost = float(sum(r["cost"] for r in rows))
-            return pd.DataFrame(rows), total_cost, chosen_size
+                prob += pulp.lpSum([x[i] for i in idx_by_dem.get(di, [])]) >= float(drow["units_required"]), f"demand_{di}"
 
-        # Extract LP solution
-        rows, total_cost = [], 0.0
-        for i, var in enumerate(x):
-            qty = var.value() or 0.0
-            if qty <= 1e-9: continue
-            opt = options[i]
-            rows.append({
-                "demand_habitat": opt["demand_habitat"],
-                "bank_id": opt["bank_id"],
-                "stock_id": opt["stock_id"],
-                "supply_habitat": opt["supply_habitat"],
-                "tier": opt["tier"],
-                "units_supplied": qty,
-                "effective_units": qty * opt["srm_mult"],
-                "unit_price": opt["unit_price"],
-                "cost": qty * opt["unit_price"]
-            })
-            total_cost += qty * opt["unit_price"]
-        return pd.DataFrame(rows), float(total_cost), chosen_size
+            # Stock caps: sum of option consumptions ≤ cap per stock
+            # each option has stock_use mapping
+            # Build stock -> list of (i, coef)
+            use_map: Dict[str, List[Tuple[int,float]]] = {}
+            for i, opt in enumerate(options):
+                for sid, coef in opt["stock_use"].items():
+                    use_map.setdefault(sid, []).append((i, float(coef)))
+            for sid, pairs in use_map.items():
+                cap = float(stock_caps.get(sid, 0.0))
+                if cap <= 0: 
+                    continue
+                prob += pulp.lpSum([coef * x[i] for (i, coef) in pairs]) <= cap, f"cap_{sid}"
 
-    # Greedy (no PuLP)
-    rows, total_cost = [], 0.0
-    for di, drow in demand_df.iterrows():
-        rem = float(drow["units_required"])
-        cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di]
-        cand.sort(key=lambda i: options[i]["unit_price"] / max(options[i]["srm_mult"], 1e-9))
-        for i in cand:
-            if rem <= 1e-9: break
-            opt = options[i]
-            cap = remaining.get(opt["stock_id"], 0.0)
-            if cap <= 1e-9: continue
-            need = rem / max(opt["srm_mult"], 1e-9)
-            take = min(cap, need)
-            if take <= 1e-9: continue
-            remaining[opt["stock_id"]] -= take
-            eff = take * opt["srm_mult"]
-            rem -= eff
-            cost = take * opt["unit_price"]
-            rows.append({
-                "demand_habitat": opt["demand_habitat"],
-                "bank_id": opt["bank_id"],
-                "stock_id": opt["stock_id"],
-                "supply_habitat": opt["supply_habitat"],
-                "tier": opt["tier"],
-                "units_supplied": take,
-                "effective_units": eff,
-                "unit_price": opt["unit_price"],
-                "cost": cost
-            })
-        if rem > 1e-6:
-            raise RuntimeError(f"Greedy could not satisfy demand for {drow['habitat_name']} (short by {rem:.2f}).")
-    total_cost = float(sum(r["cost"] for r in rows))
-    return pd.DataFrame(rows), total_cost, chosen_size
+            prob.solve(pulp.PULP_CBC_CMD(msg=False))
+            status = pulp.LpStatus[prob.status]
+            if status not in ("Optimal", "Feasible"):
+                return None, None
 
-# =========================
-# 3) Run optimiser
-# =========================
+            rows, total_cost = [], 0.0
+            for i, var in enumerate(x):
+                qty = var.value() or 0.0
+                if qty <= 1e-9: continue
+                opt = options[i]
+                rows.append({
+                    "demand_habitat": opt["demand_habitat"],
+                    "bank_id": opt["bank_id"],
+                    "supply_habitat": opt["supply_habitat"],
+                    "allocation_type": opt["type"],
+                    "tier": opt["tier"],
+                    "units_supplied": qty,              # effective units = qty (no SRM math)
+                    "unit_price": opt["unit_price"],
+                    "cost": qty * opt["unit_price"],
+                })
+                total_cost += qty * opt["unit_price"]
+            return (pd.DataFrame(rows), float(total_cost))
+
+        # Try ≤1 bank, else ≤2
+        res = solve_with_bank_limit(1)
+        if not res[0]:
+            res = solve_with_bank_limit(2)
+            if not res[0]:
+                raise RuntimeError("Infeasible even with two banks.")
+        alloc_df, total_cost = res
+        return alloc_df, total_cost, chosen_size
+
+    # -------- Greedy fallback (no PuLP): prefer 1 bank, else best 2 banks --------
+    # Score banks by cheapest average unit price across all options
+    from collections import defaultdict
+
+    # Group options by bank and demand
+    opts_by_bank: Dict[str, List[int]] = defaultdict(list)
+    for i, opt in enumerate(options):
+        opts_by_bank[opt["bank_id"]].append(i)
+
+    # Helper to try a fixed bank set
+    def greedy_for_banks(allowed_banks: List[str]) -> Tuple[bool, pd.DataFrame, float]:
+        # Available caps per stock
+        caps = stock_caps.copy()
+        rows, total = [], 0.0
+
+        for di, drow in demand_df.iterrows():
+            need = float(drow["units_required"])
+            # candidate i where bank in allowed_banks
+            cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di and opt["bank_id"] in allowed_banks]
+            # sort by unit price asc
+            cand.sort(key=lambda i: options[i]["unit_price"])
+            for i in cand:
+                if need <= 1e-9: break
+                opt = options[i]
+                # compute max we can take limited by all involved stocks
+                max_take = float('inf')
+                for sid, coef in opt["stock_use"].items():
+                    if coef <= 0: continue
+                    max_take = min(max_take, caps.get(sid, 0.0) / coef if coef > 0 else float('inf'))
+                if max_take <= 1e-9: 
+                    continue
+                take = min(max_take, need)  # 1 unit allocated contributes 1 effective unit
+                # decrement caps
+                for sid, coef in opt["stock_use"].items():
+                    caps[sid] = caps.get(sid, 0.0) - coef * take
+                cost = take * opt["unit_price"]
+                rows.append({
+                    "demand_habitat": opt["demand_habitat"],
+                    "bank_id": opt["bank_id"],
+                    "supply_habitat": opt["supply_habitat"],
+                    "allocation_type": opt["type"],
+                    "tier": opt["tier"],
+                    "units_supplied": take,
+                    "unit_price": opt["unit_price"],
+                    "cost": cost
+                })
+                need -= take
+            if need > 1e-6:
+                return False, pd.DataFrame(), 0.0
+        return True, pd.DataFrame(rows), float(sum(r["cost"] for r in rows))
+
+    # Rank banks by average cheapest option price
+    bank_prices = []
+    for b, idxs in opts_by_bank.items():
+        if not idxs: continue
+        bank_prices.append((b, np.mean([options[i]["unit_price"] for i in idxs])))
+    bank_prices.sort(key=lambda x: x[1])
+    bank_order = [b for b, _ in bank_prices]
+
+    # Try single banks
+    for b in bank_order:
+        ok, df, cost = greedy_for_banks([b])
+        if ok:
+            return df, cost, chosen_size
+
+    # Try best pairs
+    n = len(bank_order)
+    best_df, best_cost = None, float("inf")
+    for i in range(n):
+        for j in range(i+1, n):
+            ok, df, cost = greedy_for_banks([bank_order[i], bank_order[j]])
+            if ok and cost < best_cost:
+                best_df, best_cost = df, cost
+    if best_df is None:
+        raise RuntimeError("Infeasible even with two banks in greedy fallback.")
+    return best_df, best_cost, chosen_size
+
+# ========= Run optimiser UI =========
 st.subheader("3) Run optimiser")
-
 left, right = st.columns([1,1])
 with left:
     run = st.button("Optimise now", type="primary", disabled=demand_df.empty)
@@ -809,82 +915,43 @@ with right:
         st.caption(f"LPA: {target_lpa_name or '—'} | NCA: {target_nca_name or '—'} | "
                    f"LPA neigh: {len(lpa_neighbors)} | NCA neigh: {len(nca_neighbors)}")
     else:
-        st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’ for all).")
+        st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’).")
 
-# --- Diagnostics ---
-with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False):
+# ========= Diagnostics =========
+with st.expander("🔎 Diagnostics", expanded=False):
     try:
         if demand_df.empty:
             st.info("Add some demand rows above to see diagnostics.", icon="ℹ️")
         else:
             dd = demand_df.copy()
-
             present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
             total_units = float(dd["units_required"].sum())
             chosen_size = select_contract_size(total_units, present_sizes)
             st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes}, total demand: {total_units})")
-
             st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
             st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
 
-            st.write("**Demand:**")
-            st.dataframe(dd, use_container_width=True)
-
-            st.subheader("Pricing coverage")
-            cat_names_diag = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-            missing_in_catalog = [h for h in dd["habitat_name"] if h not in cat_names_diag]
-            if missing_in_catalog:
-                st.error(f"Not in HabitatCatalog (fix names): {missing_in_catalog}")
-
-            for hab in dd["habitat_name"].unique():
-                dfp = backend["Pricing"][(backend["Pricing"]["habitat_name"] == hab) &
-                                         (backend["Pricing"]["contract_size"] == chosen_size)]
-                st.write(f"- **{hab}**: {len(dfp)} price rows for `{chosen_size}`")
-                if dfp.empty:
-                    st.warning("→ No pricing rows for this habitat/size; optimiser will have zero options.")
-                else:
-                    st.dataframe(dfp[["bank_id","tier","price"]].sort_values(["bank_id","tier"]),
-                                 use_container_width=True, hide_index=True)
-
-            st.subheader("Stock snapshot (quantity_available)")
-            df_stock = backend["Stock"].merge(backend["HabitatCatalog"], on="habitat_name", how="left")
-            df_need = df_stock[df_stock["habitat_name"].isin(dd["habitat_name"])]
-            if df_need.empty:
-                st.warning("No stock rows match your demand habitat names.")
+            options_preview, stock_caps_preview, _ = prepare_options(
+                dd, chosen_size,
+                sstr(target_lpa_name), sstr(target_nca_name),
+                [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
+                lpa_neighbors_norm, nca_neighbors_norm
+            )
+            if not options_preview:
+                st.error("No candidate options (check prices/stock/rules).")
             else:
-                st.dataframe(df_need[["bank_id","habitat_name","quantity_available"]]
-                             .sort_values(["habitat_name","quantity_available"], ascending=[True, False]),
-                             use_container_width=True, hide_index=True)
-                if (df_need["quantity_available"] <= 0).all():
-                    st.warning("All matching stock for these habitats has zero quantity_available.")
-
-            # Candidate option preview (reusing same logic as optimiser)
-            st.subheader("Candidate options & tier capacity")
-            try:
-                size_preview = chosen_size
-                options_preview, _ = prepare_options(
-                    dd, size_preview,
-                    sstr(target_lpa_name), sstr(target_nca_name),
-                    [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
-                    lpa_neighbors_norm, nca_neighbors_norm
+                cand_df = pd.DataFrame(options_preview)
+                # Summaries
+                st.write("**Candidate options (by type & tier):**")
+                st.dataframe(
+                    cand_df.groupby(["demand_habitat","allocation_type","tier"], as_index=False)
+                           .agg(options=("tier","count"),
+                                min_price=("unit_price","min"),
+                                max_price=("unit_price","max")),
+                    use_container_width=True, hide_index=True
                 )
-                if not options_preview:
-                    st.error("No candidate options were generated (check prices/stock/rules).")
-                else:
-                    cand_df = pd.DataFrame(options_preview)
-                    cand_df["eff_from_primary"] = cand_df["stock_cap"] * cand_df["srm_mult"]
-                    st.dataframe(
-                        cand_df.groupby(["demand_habitat","tier"], as_index=False).agg(
-                            options=("tier","count"),
-                            eff_capacity=("eff_from_primary","sum")
-                        ).sort_values(["demand_habitat","tier"]),
-                        use_container_width=True, hide_index=True
-                    )
-            except Exception as inner:
-                st.warning(f"Preview build failed: {inner}")
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
-
 
 # --- Run optimiser ---
 if run:
@@ -893,7 +960,7 @@ if run:
             st.error("Add at least one demand row before optimising.")
             st.stop()
 
-        # Validate against catalog names (selectbox already helps here)
+        # Validate against catalog names (selectbox ensures canonical)
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
         unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run]
         if unknown:
@@ -918,15 +985,13 @@ if run:
         st.markdown("#### By bank")
         by_bank = alloc_df.groupby("bank_id", as_index=False).agg(
             units_supplied=("units_supplied","sum"),
-            effective_units=("effective_units","sum"),
             cost=("cost","sum")
         )
         st.dataframe(by_bank, use_container_width=True)
 
-        st.markdown("#### By habitat")
+        st.markdown("#### By habitat (supply)")
         by_hab = alloc_df.groupby("supply_habitat", as_index=False).agg(
             units_supplied=("units_supplied","sum"),
-            effective_units=("effective_units","sum"),
             cost=("cost","sum")
         )
         st.dataframe(by_hab, use_container_width=True)
@@ -946,6 +1011,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
