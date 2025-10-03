@@ -1,14 +1,5 @@
-# app.py — BNG Optimiser (Standalone, v4)
-# - Login (WC0323 / Wimbourne fallback unless set in st.secrets)
-# - Dynamic Banks LPA/NCA enrichment (lat/lon/postcode/address -> polygons)
-# - Robust HTTP + POST for polygon queries (avoid 414)
-# - Locate draws LPA/NCA polygons immediately
-# - Demand builder with autosuggest + "➕ Net Gain (Low-equivalent)"
-# - Official trading rules (Low/Medium/High+); NO SRM math (already priced in matrix)
-# - Prefer LOCAL/ADJACENT stock first; FAR only for shortfall
-# - Prefer 1 bank (≤2 banks max). MILP with bank-binaries if PuLP present; greedy fallback otherwise
-# - Medium fallback: Orchard + Scrub pair (0.5+0.5 from same bank) only when site has NO local/adjacent banks; deprioritised vs direct swaps
-# - Post-optimisation map overlay: chosen bank markers + target→bank lines
+# app.py — BNG Optimiser (Standalone), v5
+# See feature list in chat; this version adds Auto-Locate on optimise + Proximity Audit.
 
 import json
 import re
@@ -978,12 +969,80 @@ with st.expander("🔎 Diagnostics", expanded=False):
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
 
+# ========= Proximity Audit =========
+with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t chosen)", expanded=False):
+    try:
+        if demand_df.empty:
+            st.info("Add demand rows to see proximity audit.")
+        else:
+            dd = demand_df.copy()
+            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+            total_units = float(dd["units_required"].sum())
+            chosen_size = select_contract_size(total_units, present_sizes)
+
+            opts, _, _ = prepare_options(
+                dd, chosen_size,
+                sstr(target_lpa_name), sstr(target_nca_name),
+                [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
+                lpa_neighbors_norm, nca_neighbors_norm
+            )
+            if not opts:
+                st.warning("No options to audit.")
+            else:
+                o = pd.DataFrame(opts)
+                for dem in dd["habitat_name"].unique():
+                    sub = o[o["demand_habitat"] == dem].copy()
+                    if sub.empty:
+                        st.write(f"**{dem}** — no candidates (check catalog/trading rules).")
+                        continue
+                    sub["approx_cap"] = sub["stock_use"].apply(lambda d: sum(d.values()) if isinstance(d, dict) else 0.0)
+                    g = sub.groupby(["bank_id","proximity"], as_index=False).agg(
+                        min_price=("unit_price","min"),
+                        options=("unit_price","count"),
+                        approx_cap=("approx_cap","sum")
+                    ).sort_values(["proximity","min_price"])
+                    st.write(f"**{dem}** — candidates by bank & proximity")
+                    st.dataframe(g, use_container_width=True, hide_index=True)
+
+                st.markdown("**Sanity checks**")
+                banks_missing_geo = backend["Banks"][
+                    (backend["Banks"]["lpa_name"].map(sstr) == "") | (backend["Banks"]["nca_name"].map(sstr) == "")
+                ][["bank_id","lpa_name","nca_name"]]
+                if not banks_missing_geo.empty:
+                    st.warning("Some banks have no LPA/NCA (they will always look FAR):")
+                    st.dataframe(banks_missing_geo, use_container_width=True, hide_index=True)
+
+                pr = backend["Pricing"].copy()
+                pr = pr[pr["contract_size"] == chosen_size]
+                needed = pd.MultiIndex.from_product(
+                    [backend["Stock"]["bank_id"].dropna().unique(),
+                     demand_df["habitat_name"].unique(),
+                     ["local","adjacent","far"]], names=["bank_id","habitat_name","tier"]
+                ).to_frame(index=False)
+                merged = needed.merge(pr[["bank_id","habitat_name","tier","price"]],
+                                      on=["bank_id","habitat_name","tier"], how="left", indicator=True)
+                missing_adj = merged[(merged["tier"] == "adjacent") & (merged["_merge"] == "left_only")]
+                if not missing_adj.empty:
+                    st.warning("Missing ADJACENT pricing rows (for selected contract size) for some bank+habitat — those options are skipped.")
+                    st.dataframe(missing_adj[["bank_id","habitat_name","tier"]], use_container_width=True, hide_index=True)
+    except Exception as e:
+        st.error(f"Audit error: {e}")
+
 # --- Run optimiser ---
 if run:
     try:
         if demand_df.empty:
             st.error("Add at least one demand row before optimising.")
             st.stop()
+
+        # Auto-locate if user forgot to press Locate (to get correct neighbours/tiers)
+        if not sstr(target_lpa_name) or not sstr(target_nca_name):
+            if sstr(postcode) or sstr(address):
+                try:
+                    (_t_lpa, _t_nca, _lpaN, _ncaN, _lpaNn, _ncaNn,
+                     _lat, _lon, _lpa_gj, _nca_gj) = find_site(postcode, address)
+                except Exception as e:
+                    st.warning(f"Auto-locate failed: {e}. Proceeding with 'far' tiers only.")
 
         # Validate against catalog—but allow the special Net Gain label
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
@@ -992,8 +1051,16 @@ if run:
             st.error(f"These demand habitats aren’t in the catalog: {unknown}")
             st.stop()
 
-        target_lpa = sstr(target_lpa_name)
-        target_nca = sstr(target_nca_name)
+        target_lpa = sstr(st.session_state.get("target_lpa_name", target_lpa_name))
+        target_nca = sstr(st.session_state.get("target_nca_name", target_nca_name))
+        lpa_neighbors = st.session_state.get("lpa_neighbors", lpa_neighbors)
+        nca_neighbors = st.session_state.get("nca_neighbors", nca_neighbors)
+        lpa_neighbors_norm = st.session_state.get("lpa_neighbors_norm", lpa_neighbors_norm)
+        nca_neighbors_norm = st.session_state.get("nca_neighbors_norm", nca_neighbors_norm)
+        target_lat = st.session_state.get("target_lat", target_lat)
+        target_lon = st.session_state.get("target_lon", target_lon)
+        lpa_geojson = st.session_state.get("lpa_geojson", lpa_geojson)
+        nca_geojson = st.session_state.get("nca_geojson", nca_geojson)
 
         alloc_df, total_cost, size = optimise(
             demand_df,
@@ -1085,6 +1152,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
