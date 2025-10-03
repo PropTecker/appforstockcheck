@@ -1,6 +1,7 @@
+# app.py — BNG Optimiser (Standalone) with login + hardened requests
+
 import json
 import math
-import base64
 from io import StringIO, BytesIO
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
@@ -17,6 +18,43 @@ import folium
 st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
 st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
 st.caption("Upload backend workbook, locate target site, and optimise supply with SRM, distinctiveness and TradingRules.")
+
+# =========================
+# Login wall (secrets first, else fallback)
+# =========================
+DEFAULT_USER = "WC0323"
+DEFAULT_PASS = "Wimbourne"
+
+def require_login():
+    if "auth_ok" not in st.session_state:
+        st.session_state.auth_ok = False
+
+    if st.session_state.auth_ok:
+        # optional logout
+        with st.sidebar:
+            if st.button("Log out"):
+                st.session_state.auth_ok = False
+                st.rerun()
+        return
+
+    st.markdown("## 🔐 Sign in")
+    with st.form("login_form"):
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
+        submit = st.form_submit_button("Sign in")
+
+    if submit:
+        valid_u = st.secrets.get("auth", {}).get("username", DEFAULT_USER)
+        valid_p = st.secrets.get("auth", {}).get("password", DEFAULT_PASS)
+        if u == valid_u and p == valid_p:
+            st.session_state.auth_ok = True
+            st.rerun()
+        else:
+            st.error("Invalid credentials")
+            st.stop()
+    st.stop()
+
+require_login()
 
 # =========================
 # Constants & endpoints
@@ -45,35 +83,57 @@ except Exception:
     _HAS_PULP = False
 
 # =========================
-# Helpers
+# Hardened HTTP helpers
 # =========================
-def http_get(url, params=None, headers=None, timeout=20):
-    return requests.get(url, params=params or {}, headers=headers or UA, timeout=timeout)
+def http_get(url, params=None, headers=None, timeout=25):
+    try:
+        r = requests.get(url, params=params or {}, headers=headers or UA, timeout=timeout)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        raise RuntimeError(f"HTTP error for {url}: {e}")
 
+def safe_json(r: requests.Response) -> Dict[str, Any]:
+    try:
+        return r.json()
+    except Exception:
+        text_preview = (r.text or "")[:300]
+        raise RuntimeError(
+            f"Invalid JSON from {r.url} (status {r.status_code}). "
+            f"Response starts with: {text_preview}"
+        )
+
+# =========================
+# Geocoding / lookups
+# =========================
 def get_postcode_info(pc: str) -> Tuple[float, float, str]:
     pc_clean = pc.replace(" ", "").upper()
     r = http_get(POSTCODES_IO + pc_clean)
-    r.raise_for_status()
-    data = r.json()["result"]
+    js = safe_json(r)
+    if js.get("status") != 200 or not js.get("result"):
+        raise RuntimeError(f"Postcode lookup failed for '{pc}'.")
+    data = js["result"]
     return float(data["latitude"]), float(data["longitude"]), (data.get("admin_district") or data.get("admin_county") or "")
 
 def reverse_postcode(lat: float, lon: float) -> Optional[str]:
     r = http_get(POSTCODES_IO_REVERSE, params={"lon": lon, "lat": lat, "limit": 1})
-    if r.status_code != 200:
-        return None
-    res = (r.json().get("result") or [])
+    js = safe_json(r)
+    res = js.get("result") or []
     return (res[0] or {}).get("postcode") if res else None
 
 def geocode_address(addr: str) -> Tuple[float, float]:
     # Nominatim
     r = http_get(NOMINATIM_SEARCH, params={"q": addr, "format": "jsonv2", "limit": 1, "addressdetails": 0})
-    if r.status_code == 200 and r.json():
-        lat, lon = r.json()[0]["lat"], r.json()[0]["lon"]
+    js = safe_json(r)
+    if isinstance(js, list) and js:
+        lat, lon = js[0]["lat"], js[0]["lon"]
         return float(lat), float(lon)
     # Photon fallback
     r = http_get("https://photon.komoot.io/api/", params={"q": addr, "limit": 1})
-    if r.status_code == 200 and (r.json().get("features") or []):
-        lon, lat = r.json()["features"][0]["geometry"]["coordinates"]
+    js = safe_json(r)
+    feats = js.get("features") or []
+    if feats:
+        lon, lat = feats[0]["geometry"]["coordinates"]
         return float(lat), float(lon)
     raise RuntimeError("Address geocoding failed.")
 
@@ -91,7 +151,9 @@ def arcgis_point_query(layer_url: str, lat: float, lon: float, out_fields: str) 
         "outSR": 4326
     }
     r = http_get(f"{layer_url}/query", params=params)
-    return (r.json().get("features") or [{}])[0]
+    js = safe_json(r)
+    feats = js.get("features") or []
+    return feats[0] if feats else {}
 
 def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_field: str) -> List[str]:
     if not polygon_geom:
@@ -108,7 +170,8 @@ def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_fie
         "outSR": 4326
     }
     r = http_get(f"{layer_url}/query", params=params)
-    names = [ (f.get("attributes") or {}).get(name_field) for f in r.json().get("features", []) ]
+    js = safe_json(r)
+    names = [ (f.get("attributes") or {}).get(name_field) for f in js.get("features", []) ]
     return sorted({n for n in names if n})
 
 def tier_for_bank(bank_lpa: str, bank_nca: str, t_lpa: str, t_nca: str, lpa_neigh: List[str], nca_neigh: List[str]) -> str:
@@ -143,7 +206,6 @@ with st.sidebar:
         help="How to treat 'quoted' units when computing quantity_available."
     )
 
-# Load backend
 def load_backend(xls_file) -> Dict[str, pd.DataFrame]:
     x = pd.ExcelFile(xls_file)
     backend = {
@@ -169,7 +231,7 @@ if backend is None:
     st.warning("Upload your backend workbook to continue.", icon="⚠️")
     st.stop()
 
-# Apply quotes policy if the backend Stock contains quoted/available columns (from your WITH_STOCK export)
+# Apply quotes policy if WITH_STOCK fields exist
 if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["Stock"].columns:
     s = backend["Stock"].copy()
     if quotes_hold_policy == "Ignore quotes (default)":
@@ -180,7 +242,7 @@ if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["
         s["quantity_available"] = (s["available_excl_quotes"] - 0.5 * s["quoted"]).clip(lower=0)
     backend["Stock"] = s
 
-# Validate columns
+# Validate minimal columns
 for sheet, cols in {
     "Pricing": ["bank_id","habitat_name","contract_size","tier","price"],
     "Stock": ["bank_id","habitat_name","stock_id","quantity_available"],
@@ -252,7 +314,7 @@ default_demand = "Individual trees - Urban tree,8\nGrassland - Other neutral gra
 demand_csv = st.text_area("CSV: habitat_name,units_required", value=default_demand, height=120)
 
 # =========================
-# Optimiser
+# Optimiser helpers
 # =========================
 def enforce_catalog_rules(demand_row, supply_row) -> bool:
     # same broader_type AND supply distinctiveness >= demand distinctiveness
@@ -297,7 +359,6 @@ def prepare_options(demand_df: pd.DataFrame,
     options = []
     remaining = {}
 
-    # Dist val lookup for min-distinctiveness checks
     def dval(name: Optional[str]) -> float:
         return dist_levels_map.get((name or "").strip(), -1e9)
 
@@ -310,7 +371,6 @@ def prepare_options(demand_df: pd.DataFrame,
         drow["broader_type"] = d_broader
         drow["distinctiveness_name"] = d_dist
 
-        # Candidate supplies
         cand_parts = []
 
         # 1) Explicit TradingRules for this demand
@@ -350,7 +410,7 @@ def prepare_options(demand_df: pd.DataFrame,
             if price_row.empty:
                 continue
 
-            # If this option came from explicit TradingRules, skip catalog guardrail; else enforce it
+            # If came from explicit TradingRules, skip catalog guardrail; else enforce it
             explicit = dem_hab in trade_idx
             if not explicit and not enforce_catalog_rules(
                 pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}), s
@@ -469,14 +529,14 @@ def optimise(demand_df: pd.DataFrame,
     return pd.DataFrame(rows), float(total_cost), chosen_size
 
 # =========================
-# Run
+# Run UI
 # =========================
 st.subheader("3) Run optimiser")
 left, right = st.columns([1,1])
 with left:
-    run = st.button("Optimise now", type="primary", disabled=not (target_lpa_name or target_nca_name))
+    run = st.button("Optimise now", type="primary", disabled=False)
 with right:
-    st.caption("Make sure you’ve run ‘Locate’ first to load LPA/NCA & neighbours.")
+    st.caption("Tip: run ‘Locate’ first to load LPA/NCA & neighbours for precise tiering.")
 
 if run:
     try:
@@ -490,10 +550,17 @@ if run:
         if unknown:
             st.warning(f"These demand habitats aren’t in the catalog: {unknown}")
 
+        # If user didn’t run Locate, we still allow optimisation using 'far' tier everywhere
+        if not target_lpa_name and not target_nca_name:
+            lpa_neighbors, nca_neighbors = [], []
+            target_lpa, target_nca = "", ""
+        else:
+            target_lpa, target_nca = target_lpa_name or "", target_nca_name or ""
+
         alloc_df, total_cost, size = optimise(
             demand_df,
-            target_lpa_name or "",
-            target_nca_name or "",
+            target_lpa,
+            target_nca,
             lpa_neighbors, nca_neighbors
         )
 
@@ -518,7 +585,7 @@ if run:
         )
         st.dataframe(by_hab, use_container_width=True)
 
-        # Download buttons
+        # Downloads
         def df_to_csv_bytes(df):
             buf = BytesIO()
             buf.write(df.to_csv(index=False).encode("utf-8"))
@@ -534,3 +601,4 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
