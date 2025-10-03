@@ -1,7 +1,11 @@
-# app.py — BNG Optimiser (Standalone), v6
-# Adds proxy pricing: if exact priced habitat isn't present at a bank+tier+size,
-# price via group/distinctiveness-compliant proxy rows (while still allocating real stock).
-# Other features: Auto-Locate, Proximity Audit, Net Gain (Low-equivalent), local/adjacent-first, ≤2 banks.
+# app.py — BNG Optimiser (Standalone), v7
+# Changes in v7:
+# - Trading-rule-aligned proxy pricing:
+#   Medium: same group with distinctiveness >= Medium; else ANY group with higher distinctiveness.
+#   Low: any priced row (cheapest).
+#   High/Very High: like-for-like (exact only).
+# - Uses group/distinctiveness columns from Pricing when present; falls back to Catalog if blank.
+# - Keeps all previous features (Auto-Locate, ≤2 banks, local/adjacent-first, map overlays, diagnostics, audits).
 
 import json
 import re
@@ -94,6 +98,7 @@ def http_get(url, params=None, headers=None, timeout=25):
 def http_post(url, data=None, headers=None, timeout=25):
     try:
         r = requests.post(url, data=data or {}, headers=headers or UA, timeout=timeout)
+    # raise_for_status after posting to show body on 4xx/5xx is not helpful; we rely on ArcGIS returning JSON.
         r.raise_for_status()
         return r
     except Exception as e:
@@ -549,7 +554,7 @@ def prepare_options(demand_df: pd.DataFrame,
         (Banks, ["lpa_name","nca_name","lat","lon","postcode","address","bank_id"]),
         (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
         (Stock, ["habitat_name","stock_id","bank_id"]),
-        (Pricing, ["habitat_name","contract_size","tier","bank_id"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id","broader_type","distinctiveness_name"]),
         (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
     ]:
         if not df.empty:
@@ -560,31 +565,25 @@ def prepare_options(demand_df: pd.DataFrame,
     stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
                       .merge(Catalog, on="habitat_name", how="left")
 
-    pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
-    
+    pricing_cs = Pricing[Pricing["contract_size"].str.lower() == chosen_size].copy()
+
     # ---- Build pricing_enriched that always has group & distinctiveness ----
-    # pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()   # you already have this line above
-    
     Catalog_cols = ["habitat_name", "broader_type", "distinctiveness_name"]
     pc_join = pricing_cs.merge(
         Catalog[Catalog_cols], on="habitat_name", how="left", suffixes=("", "_cat")
     )
-    
-    # If Pricing provides its own broader_type/distinctiveness_name, prefer those; else use the catalog's
-    pc_join["broader_type_eff"] = pc_join["broader_type"].where(pc_join["broader_type"].astype(str).str.len() > 0,
-                                                               pc_join["broader_type_cat"])
+    pc_join["broader_type_eff"] = pc_join["broader_type"].where(
+        pc_join["broader_type"].astype(str).str.len() > 0, pc_join["broader_type_cat"]
+    )
     pc_join["distinctiveness_name_eff"] = pc_join["distinctiveness_name"].where(
         pc_join["distinctiveness_name"].astype(str).str.len() > 0,
         pc_join["distinctiveness_name_cat"]
     )
-    
-    # Normalise strings
     for c in ["broader_type_eff", "distinctiveness_name_eff", "tier", "bank_id", "habitat_name"]:
         if c in pc_join.columns:
             pc_join[c] = pc_join[c].map(sstr)
-    
-    pricing_enriched = pc_join  # <- use this from now on
 
+    pricing_enriched = pc_join  # use from here on
 
     # Trading index (still supported)
     trade_idx = {}
@@ -642,7 +641,8 @@ def prepare_options(demand_df: pd.DataFrame,
         """
         Returns (price, source_kind, price_habitat) or None.
         source_kind: "exact" (exact habitat row) | "group-proxy" (group/distinctiveness row)
-        price_habitat: the habitat_name used to price (may be blank for pure group rows)
+        price_habitat: the habitat_name used to price (may be blank or different when proxying)
+        Uses: pricing_enriched, dist_levels_map.
         """
         # 0) Exact habitat price row (bank + tier + size)
         pr_exact = pricing_enriched[(pricing_enriched["bank_id"] == bank_id) &
@@ -651,48 +651,44 @@ def prepare_options(demand_df: pd.DataFrame,
         if not pr_exact.empty:
             r = pr_exact.sort_values("price").iloc[0]
             return float(r["price"]), "exact", sstr(r["habitat_name"])
-    
-        # Numeric distinctiveness for comparisons
-        def dval(name: Optional[str]) -> float:
-            key = sstr(name)
-            return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
-    
+
         d_key = sstr(demand_dist).lower()
-        d_val = dval(demand_dist)
-    
-        # 1) GROUP rows at this bank + tier + size
+        d_num = dval(demand_dist)
+
+        # All rows at this bank+tier+size that have effective group & distinctiveness
         grp = pricing_enriched[(pricing_enriched["bank_id"] == bank_id) &
                                (pricing_enriched["tier"] == tier)]
-        if grp.empty:
-            return None
-    
-        # Keep only rows with a known effective group/distinctiveness (from pricing or catalog)
         grp = grp[(grp["broader_type_eff"].astype(str).str.len() > 0) &
                   (grp["distinctiveness_name_eff"].astype(str).str.len() > 0)]
         if grp.empty:
             return None
-    
-        # Apply rules by demand distinctiveness
-        if d_key == "low":
-            # Low → any row, choose cheapest
-            r = grp.sort_values("price").iloc[0]
-            return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
-    
-        if d_key == "medium":
-            # Medium → same group AND distinctiveness >= Medium
-            grp = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
-            if grp.empty:
-                return None
-            grp["_dval"] = grp["distinctiveness_name_eff"].map(lambda nm: dval(nm))
-            grp = grp[grp["_dval"] >= d_val]  # >= Medium
-            if grp.empty:
-                return None
-            r = grp.sort_values("price").iloc[0]
-            return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
-    
-        # High / Very High → like-for-like only (must have exact habitat price row)
-        return None
 
+        if d_key == "low":
+            # Low → any priced row (cheapest)
+            r = grp.sort_values("price").iloc[0]
+            return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
+
+        if d_key == "medium":
+            # 2a) Preferred: same group with distinctiveness >= Medium
+            grp_same = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
+            if not grp_same.empty:
+                grp_same["_dval"] = grp_same["distinctiveness_name_eff"].map(dval)
+                grp_same = grp_same[grp_same["_dval"] >= d_num]
+                if not grp_same.empty:
+                    r = grp_same.sort_values("price").iloc[0]
+                    return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
+
+            # 2b) NEW: ANY group with distinctiveness strictly higher than Medium
+            grp_any_higher = grp.assign(_dval=grp["distinctiveness_name_eff"].map(dval))
+            grp_any_higher = grp_any_higher[grp_any_higher["_dval"] > d_num]
+            if not grp_any_higher.empty:
+                r = grp_any_higher.sort_values("price").iloc[0]
+                return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
+
+            return None  # no compliant proxy at this bank/tier/size
+
+        # High / Very High → like-for-like only (must have exact price row)
+        return None
 
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
@@ -758,7 +754,6 @@ def prepare_options(demand_df: pd.DataFrame,
                 continue
             unit_price, price_source, price_hab_used = price_info
 
-
             cap = float(s.get("quantity_available", 0) or 0.0)
             if cap <= 0:
                 continue
@@ -795,11 +790,9 @@ def prepare_options(demand_df: pd.DataFrame,
                             sstr(s.get("lpa_name")), sstr(s.get("nca_name")),
                             target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
                         )
-                        # price each half via proxy-capable finder
-                        pi_o = find_price_for_supply(b, ORCHARD_NAME, tier_b, d_dist,
-                                                     sstr(o.get("broader_type")), sstr(o.get("distinctiveness_name")))
-                        pi_s = find_price_for_supply(b, s["habitat_name"], tier_b, d_dist,
-                                                     sstr(s.get("broader_type")), sstr(s.get("distinctiveness_name")))
+                        # Price each half via demand-based proxy finder
+                        pi_o = find_price_for_supply(b, ORCHARD_NAME, tier_b, d_broader, d_dist)
+                        pi_s = find_price_for_supply(b, s["habitat_name"], tier_b, d_broader, d_dist)
                         if not pi_o or not pi_s:
                             continue
                         cap_o = float(o.get("quantity_available", 0) or 0.0)
@@ -817,7 +810,7 @@ def prepare_options(demand_df: pd.DataFrame,
                             "proximity": tier_b,
                             "unit_price": price,
                             "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s["stock_id"]): 0.5},
-                            "price_source": "proxy",  # at least one half used proxy or exact; label as proxy pair
+                            "price_source": "group-proxy",
                             "price_habitat": f"{pi_o[2]} + {pi_s[2]}",
                         })
 
@@ -1038,7 +1031,7 @@ with st.expander("🔎 Diagnostics", expanded=False):
             st.info("Add some demand rows above to see diagnostics.", icon="ℹ️")
         else:
             dd = demand_df.copy()
-            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().str.lower().tolist()
             total_units = float(dd["units_required"].sum())
             chosen_size = select_contract_size(total_units, present_sizes)
             st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes}, total demand: {total_units})")
@@ -1065,7 +1058,7 @@ with st.expander("🔎 Diagnostics", expanded=False):
                 )
                 st.dataframe(grouped, use_container_width=True, hide_index=True)
                 if "price_source" in cand_df.columns:
-                    st.caption("Note: options with `price_source='proxy'` were priced via a group/distinctiveness proxy row.")
+                    st.caption("Note: options with `price_source='group-proxy'` were priced via group/distinctiveness rows.")
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
 
@@ -1076,7 +1069,7 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
             st.info("Add demand rows to see proximity audit.")
         else:
             dd = demand_df.copy()
-            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().str.lower().tolist()
             total_units = float(dd["units_required"].sum())
             chosen_size = select_contract_size(total_units, present_sizes)
 
@@ -1113,6 +1106,7 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
                     st.dataframe(banks_missing_geo, use_container_width=True, hide_index=True)
 
                 pr = backend["Pricing"].copy()
+                pr["contract_size"] = pr["contract_size"].str.lower()
                 pr = pr[pr["contract_size"] == chosen_size]
                 needed = pd.MultiIndex.from_product(
                     [backend["Stock"]["bank_id"].dropna().unique(),
@@ -1123,7 +1117,7 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
                                       on=["bank_id","habitat_name","tier"], how="left", indicator=True)
                 missing_adj = merged[(merged["tier"] == "adjacent") & (merged["_merge"] == "left_only")]
                 if not missing_adj.empty:
-                    st.warning("Missing ADJACENT pricing rows (for selected contract size) for some bank+habitat — exact pricing would be skipped, but proxy may apply.")
+                    st.warning("Missing ADJACENT exact pricing rows for some bank+habitat — group-proxy may still price Medium/Low where trading rules allow.")
                     st.dataframe(missing_adj[["bank_id","habitat_name","tier"]], use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Audit error: {e}")
@@ -1134,11 +1128,12 @@ with st.expander("💷 Pricing completeness (this contract size)", expanded=Fals
         if demand_df.empty:
             st.info("Add demand rows to see pricing completeness.")
         else:
-            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().str.lower().tolist()
             total_units = float(demand_df["units_required"].sum())
             chosen_size = select_contract_size(total_units, present_sizes)
 
             pr = backend["Pricing"].copy()
+            pr["contract_size"] = pr["contract_size"].str.lower()
             pr = pr[pr["contract_size"] == chosen_size]
             needed = pd.MultiIndex.from_product(
                 [
@@ -1158,9 +1153,10 @@ with st.expander("💷 Pricing completeness (this contract size)", expanded=Fals
 
             missing = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
             if missing.empty:
-                st.success(f"All tiers priced for size `{chosen_size}` across the demanded habitats (exact pricing available).")
+                st.success(f"All exact pricing rows exist for size `{chosen_size}` across the demanded habitats.")
             else:
-                st.warning("Missing exact pricing rows below — proxy pricing may be used where allowed by rules.")
+                st.warning("Some exact pricing rows are missing — that’s fine if they’re not tradeable, "
+                           "or if Medium/Low can use group-proxy rules. Those exact rows will be ignored.")
                 st.dataframe(
                     missing.sort_values(["habitat_name","bank_id","tier"]),
                     use_container_width=True, hide_index=True
@@ -1214,7 +1210,7 @@ if run:
         st.markdown("#### Allocation detail")
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
-            st.caption("Note: rows with `price_source='proxy'` were priced using a group/distinctiveness proxy habitat.")
+            st.caption("Note: rows with `price_source='group-proxy'` were priced using group/distinctiveness rows in the Pricing sheet.")
 
         st.markdown("#### By bank")
         by_bank = alloc_df.groupby("bank_id", as_index=False).agg(
@@ -1294,6 +1290,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
