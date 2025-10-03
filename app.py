@@ -1,5 +1,10 @@
-# app.py — BNG Optimiser (Standalone) with login, POST fix, aliases, diagnostics,
-# and OFFICIAL distinctiveness trading rules
+# app.py — BNG Optimiser (Standalone) with:
+# - login gate
+# - hardened HTTP + POST helper (avoids 414)
+# - official distinctiveness trading rules
+# - diagnostics
+# - session persistence for LPA/NCA + neighbours + geoms (fixes "forgetting on rerun")
+# - map overlays for LPA/NCA polygons
 
 import json
 from io import StringIO, BytesIO
@@ -110,6 +115,34 @@ def safe_json(r: requests.Response) -> Dict[str, Any]:
         )
 
 # =========================
+# Geo helpers (ESRI polygon -> GeoJSON)
+# =========================
+def esri_polygon_to_geojson(geom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Convert ArcGIS polygon geometry (rings) to GeoJSON Polygon/MultiPolygon.
+    Rings are lists of [x,y] == [lon,lat].
+    """
+    if not geom or "rings" not in geom:
+        return None
+    rings = geom.get("rings") or []
+    if not rings:
+        return None
+    if len(rings) == 1:
+        return {"type": "Polygon", "coordinates": [rings[0]]}
+    # treat each ring as a separate polygon shell (ArcGIS may not flag holes clearly here)
+    return {"type": "MultiPolygon", "coordinates": [[ring] for ring in rings]}
+
+def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weight: int, fill_opacity: float = 0.05):
+    if not geojson:
+        return
+    folium.GeoJson(
+        geojson,
+        name=name,
+        style_function=lambda x: {"color": color, "fillOpacity": fill_opacity, "weight": weight},
+        tooltip=name
+    ).add_to(fmap)
+
+# =========================
 # Geocoding / lookups
 # =========================
 def get_postcode_info(pc: str) -> Tuple[float, float, str]:
@@ -178,8 +211,7 @@ def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_fie
         "outFields": name_field,
         "returnGeometry": "false",
         "outSR": 4326,
-        "geometryPrecision": 5,   # trims coord decimals
-        # "maxAllowableOffset": 0.0001,   # optional generalization if ever needed
+        "geometryPrecision": 5,
     }
     r = http_post(f"{layer_url}/query", data=data)
     js = safe_json(r)
@@ -284,13 +316,19 @@ with st.container():
     with colC:
         run_locate = st.button("Locate")
 
-lat = lon = None
-lpa_feat = nca_feat = None
-target_lpa_name = target_nca_name = ""
-lpa_neighbors = nca_neighbors = []
+# Restore prior context from session (so reruns keep values for Optimise)
+target_lpa_name = st.session_state.get("target_lpa_name", "")
+target_nca_name = st.session_state.get("target_nca_name", "")
+lpa_neighbors = st.session_state.get("lpa_neighbors", [])
+nca_neighbors = st.session_state.get("nca_neighbors", [])
+target_lat = st.session_state.get("target_lat", None)
+target_lon = st.session_state.get("target_lon", None)
+lpa_geojson = st.session_state.get("lpa_geojson", None)
+nca_geojson = st.session_state.get("nca_geojson", None)
 
 if run_locate:
     try:
+        # geocode
         if postcode.strip():
             lat, lon, _ = get_postcode_info(postcode.strip())
         elif address.strip():
@@ -304,19 +342,42 @@ if run_locate:
         nca_feat = arcgis_point_query(NCA_URL, lat, lon, "NCA_Name")
         target_lpa_name = (lpa_feat.get("attributes") or {}).get("LAD24NM", "")
         target_nca_name = (nca_feat.get("attributes") or {}).get("NCA_Name", "")
+
+        # Convert geoms for display and neighbour queries
+        lpa_geom_esri = lpa_feat.get("geometry")
+        nca_geom_esri = nca_feat.get("geometry")
+        lpa_geojson = esri_polygon_to_geojson(lpa_geom_esri)
+        nca_geojson = esri_polygon_to_geojson(nca_geom_esri)
+
+        # Neighbours via POST (avoid 414)
+        lpa_neighbors = [n for n in layer_intersect_names(LPA_URL, lpa_geom_esri, "LAD24NM") if n != target_lpa_name]
+        nca_neighbors = [n for n in layer_intersect_names(NCA_URL, nca_geom_esri, "NCA_Name") if n != target_nca_name]
+
+        # Persist to session so Optimise & future reruns reuse them
+        st.session_state["target_lpa_name"] = target_lpa_name
+        st.session_state["target_nca_name"] = target_nca_name
+        st.session_state["lpa_neighbors"] = lpa_neighbors
+        st.session_state["nca_neighbors"] = nca_neighbors
+        st.session_state["target_lat"] = lat
+        st.session_state["target_lon"] = lon
+        st.session_state["lpa_geojson"] = lpa_geojson
+        st.session_state["nca_geojson"] = nca_geojson
+
         st.success(f"Found LPA: **{target_lpa_name}** | NCA: **{target_nca_name}**")
-
-        # Neighbours via POST to avoid 414
-        lpa_neighbors = [n for n in layer_intersect_names(LPA_URL, lpa_feat.get("geometry"), "LAD24NM") if n != target_lpa_name]
-        nca_neighbors = [n for n in layer_intersect_names(NCA_URL, nca_feat.get("geometry"), "NCA_Name") if n != target_nca_name]
-
-        # Map
-        fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
-        folium.CircleMarker([lat, lon], radius=5, color="red", fill=True, tooltip="Target").add_to(fmap)
-        st_folium(fmap, height=380, returned_objects=[], use_container_width=True)
-
     except Exception as e:
         st.error(f"Location error: {e}")
+
+# --- Map (draw even on reruns using session_state) ---
+if (target_lat is not None) and (target_lon is not None):
+    fmap = folium.Map(location=[target_lat, target_lon], zoom_start=11, control_scale=True)
+    # polygons
+    add_geojson_layer(fmap, lpa_geojson, f"LPA: {target_lpa_name}" if target_lpa_name else "LPA", color="red", weight=2, fill_opacity=0.05)
+    add_geojson_layer(fmap, nca_geojson, f"NCA: {target_nca_name}" if target_nca_name else "NCA", color="yellow", weight=3, fill_opacity=0.05)
+    # point
+    folium.CircleMarker([target_lat, target_lon], radius=5, color="red", fill=True, tooltip="Target").add_to(fmap)
+    folium.LayerControl(collapsed=True).add_to(fmap)
+    st.markdown("### Map")
+    st_folium(fmap, height=420, returned_objects=[], use_container_width=True)
 
 # =========================
 # Demand input (+ aliasing)
@@ -374,7 +435,7 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
     if d_key == "low":
         return True
 
-    # Medium → same group OR strictly higher distinctiveness (higher means s_val > d_val)
+    # Medium → same group OR strictly higher distinctiveness
     if d_key == "medium":
         same_group = (d_group and s_group and d_group == s_group)
         higher_distinctiveness = (s_val > d_val)
@@ -384,7 +445,7 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
     if d_key in ("high", "very high", "very_high", "very-high"):
         return sh == dh
 
-    # Unknown label fallback: behave like Medium (conservative+useful)
+    # Unknown label fallback: behave like Medium
     same_group = (d_group and s_group and d_group == s_group)
     higher_distinctiveness = (s_val > d_val)
     return bool(same_group or higher_distinctiveness)
@@ -607,13 +668,17 @@ def optimise(demand_df: pd.DataFrame,
 st.subheader("3) Run optimiser")
 relaxed = st.checkbox("Relax official rules if explicit TradingRules exist (debug only)", value=False,
                       help="If ticked, explicit TradingRules still override; otherwise official rules apply. Use for debugging only.")
-st.session_state["relaxed_mode"] = relaxed  # kept for potential future toggles (not used by official helper)
+st.session_state["relaxed_mode"] = relaxed  # reserved
 
 left, right = st.columns([1,1])
 with left:
     run = st.button("Optimise now", type="primary")
 with right:
-    st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’ for all).")
+    if target_lpa_name or target_nca_name:
+        st.caption(f"LPA: {target_lpa_name or '—'} | NCA: {target_nca_name or '—'} | "
+                   f"LPA neigh: {len(lpa_neighbors)} | NCA neigh: {len(nca_neighbors)}")
+    else:
+        st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’ for all).")
 
 # --- Deep-dive diagnostics (why it might be infeasible) ---
 with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False):
@@ -702,7 +767,6 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 st.error("✖ Not in catalog — no distinctiveness/group info. Fix names or aliases.")
                 continue
 
-            # policy caption
             pol = "Low→anything" if d_dist.lower()=="low" else ("Medium→same group OR higher distinctiveness" if d_dist.lower()=="medium" else "High/Very High→like-for-like")
             st.caption(f"Trading policy for '{dem}': {pol}")
 
@@ -738,7 +802,6 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
 
             explicit = (dem in trade_idx)
             before = len(cand)
-            # Apply official rules (explicit rules override)
             mask = cand.apply(
                 lambda srow: enforce_catalog_rules_official(
                     pd.Series({"habitat_name": dem, "broader_type": d_broader, "distinctiveness_name": d_dist}),
@@ -830,18 +893,17 @@ if run:
             st.error(f"These demand habitats aren’t in the catalog: {unknown}")
             st.stop()
 
-        # If user didn’t run Locate, proceed with 'far' everywhere
-        if not target_lpa_name and not target_nca_name:
-            lpa_neighbors, nca_neighbors = [], []
-            target_lpa, target_nca = "", ""
-        else:
-            target_lpa, target_nca = target_lpa_name or "", target_nca_name or ""
+        # Use persisted geography (if not set, optimiser treats all tiers as 'far')
+        target_lpa = target_lpa_name or ""
+        target_nca = target_nca_name or ""
+        lpa_neigh = lpa_neighbors or []
+        nca_neigh = nca_neighbors or []
 
         alloc_df, total_cost, size = optimise(
             demand_df,
             target_lpa,
             target_nca,
-            lpa_neighbors, nca_neighbors
+            lpa_neigh, nca_neigh
         )
 
         st.success(f"Optimisation complete. Contract size = **{size}**. Total cost: **£{total_cost:,.0f}**")
@@ -881,6 +943,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
