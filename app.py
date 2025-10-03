@@ -1,9 +1,8 @@
-# app.py — BNG Optimiser (Standalone), v9
-# v9 fixes:
-# - Robust BANK_KEY builder: uses bank_name if available on any sheet (Banks/Stock/Pricing), else falls back to bank_id.
-#   No KeyError if bank_name is absent.
-# - Keeps v8 improvements: Pricing 'Price' column normalization, Medium rule (same group ≥ Medium else ANY higher distinctiveness),
-#   High/Very High like-for-like, Low any, local/adjacent-first, ≤2 banks, Net Gain input, diagnostics, proximity audit, map overlay.
+# app.py — BNG Optimiser (Standalone), v9.1
+# Changes from v9:
+# - FIX: Avoid BANK_KEY collisions when enriching Stock with Banks (don’t bring Banks.BANK_KEY).
+#   This prevents BANK_KEY_x/_y suffixing and restores proper BANK_KEY matching to Pricing.
+# - Added a “Stock sanity” block in Diagnostics to surface zeroed/ignored stock quickly.
 #
 # requirements.txt:
 # streamlit>=1.37
@@ -282,11 +281,9 @@ def make_bank_key_col(df: pd.DataFrame, banks_df: pd.DataFrame) -> pd.DataFrame:
     Never assumes bank_name exists; safe for any input df.
     """
     out = df.copy()
-    # Already has bank_name?
     has_df_name = "bank_name" in out.columns and out["bank_name"].astype(str).str.strip().ne("").any()
 
     if not has_df_name:
-        # Try to bring bank_name from Banks
         if "bank_id" in out.columns and "bank_id" in banks_df.columns and "bank_name" in banks_df.columns:
             m = banks_df[["bank_id","bank_name"]].drop_duplicates()
             out = out.merge(m, on="bank_id", how="left")
@@ -621,7 +618,7 @@ def prepare_options(demand_df: pd.DataFrame,
     for df, cols in [
         (Banks, ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name","lat","lon","postcode","address"]),
         (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
-        (Stock, ["habitat_name","stock_id","bank_id","quantity_available","bank_name"]),
+        (Stock, ["habitat_name","stock_id","bank_id","quantity_available","bank_name","BANK_KEY"]),
         (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price","broader_type","distinctiveness_name","bank_name"]),
         (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
     ]:
@@ -633,8 +630,11 @@ def prepare_options(demand_df: pd.DataFrame,
     # Attach BANK_KEY to Stock (safe even if no bank_name anywhere)
     Stock = make_bank_key_col(Stock, Banks)
 
-    stock_full = Stock.merge(Banks[["bank_id","BANK_KEY","bank_name","lpa_name","nca_name"]], on="bank_id", how="left") \
-                      .merge(Catalog, on="habitat_name", how="left")
+    # IMPORTANT FIX: don't re-bring BANK_KEY from Banks to avoid _x/_y collisions
+    stock_full = Stock.merge(
+        Banks[["bank_id","bank_name","lpa_name","nca_name"]],
+        on="bank_id", how="left"
+    ).merge(Catalog, on="habitat_name", how="left")
 
     # Contract size filter (lowercase)
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
@@ -711,9 +711,8 @@ def prepare_options(demand_df: pd.DataFrame,
                               demand_dist: str) -> Optional[Tuple[float, str, str]]:
         """
         Returns (price, source_kind, price_habitat) or None.
-        source_kind: "exact" (exact habitat row) | "group-proxy" (group/distinctiveness row)
-        price_habitat: the habitat_name used to price (may be blank or different when proxying)
-        Uses: pricing_enriched, dist_levels_map, BANK_KEY.
+        source_kind: "exact" | "group-proxy"
+        price_habitat: the habitat_name used to price (may differ when proxying)
         """
         # 0) Exact habitat price row (BANK_KEY + tier + size)
         pr_exact = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
@@ -735,12 +734,10 @@ def prepare_options(demand_df: pd.DataFrame,
             return None
 
         if d_key == "low":
-            # Low → any priced row (cheapest)
             r = grp.sort_values("price").iloc[0]
             return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
 
         if d_key == "medium":
-            # Preferred: same group with distinctiveness >= Medium
             grp_same = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
             if not grp_same.empty:
                 grp_same["_dval"] = grp_same["distinctiveness_name_eff"].map(dval)
@@ -749,14 +746,13 @@ def prepare_options(demand_df: pd.DataFrame,
                     r = grp_same.sort_values("price").iloc[0]
                     return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
 
-            # Else: ANY group with distinctiveness strictly higher than Medium
             grp_any_higher = grp.assign(_dval=grp["distinctiveness_name_eff"].map(dval))
             grp_any_higher = grp_any_higher[grp_any_higher["_dval"] > d_num]
             if not grp_any_higher.empty:
                 r = grp_any_higher.sort_values("price").iloc[0]
                 return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
 
-            return None  # no compliant proxy at this bank/tier/size
+            return None
 
         # High / Very High → like-for-like only (must have exact price row)
         return None
@@ -787,7 +783,7 @@ def prepare_options(demand_df: pd.DataFrame,
                 if not df_s.empty: cand_parts.append(df_s)
 
         if not cand_parts:
-            key = d_dist.lower()
+            key = s_dist = d_dist.lower()
             if key == "low" or dem_hab == NET_GAIN_LABEL:
                 df_s = stock_full.copy()
             elif key == "medium":
@@ -850,8 +846,8 @@ def prepare_options(demand_df: pd.DataFrame,
 
         # Medium fallback: paired Orchard + Scrub only when site is far from all banks
         if d_dist.lower() == "medium" and not site_has_local_adjacent and ORCHARD_NAME and SCRUB_NAME:
-            banks = stock_full["BANK_KEY"].dropna().unique().tolist()
-            for bk in banks:
+            banks_keys = stock_full["BANK_KEY"].dropna().unique().tolist()
+            for bk in banks_keys:
                 orch_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (stock_full["habitat_name"] == ORCHARD_NAME)]
                 scrub_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (
                     (stock_full["habitat_name"] == SCRUB_NAME) |
@@ -1123,6 +1119,16 @@ with st.expander("🔎 Diagnostics", expanded=False):
             st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
             st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
 
+            # Stock sanity (helps catch empty/zeroed stock immediately)
+            try:
+                s = backend["Stock"].copy()
+                s["quantity_available"] = pd.to_numeric(s["quantity_available"], errors="coerce").fillna(0)
+                st.write("**Stock sanity**")
+                st.write(f"Non-zero stock rows: **{(s['quantity_available']>0).sum()}** | "
+                         f"Total available units: **{s['quantity_available'].sum():.2f}**")
+            except Exception as _e:
+                st.warning(f"Stock sanity check failed: {_e}")
+
             options_preview, _, _ = prepare_options(
                 dd, chosen_size,
                 sstr(target_lpa_name), sstr(target_nca_name),
@@ -1146,20 +1152,6 @@ with st.expander("🔎 Diagnostics", expanded=False):
                     st.caption("Note: `price_source='group-proxy'` means we priced using group/distinctiveness rows.")
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
-
-st.write("**Stock sanity**")
-try:
-    s = backend["Stock"].copy()
-    s["quantity_available"] = pd.to_numeric(s["quantity_available"], errors="coerce").fillna(0)
-    st.write(f"Non-zero stock rows: **{(s['quantity_available']>0).sum()}** | "
-             f"Total available units: **{s['quantity_available'].sum():.2f}**")
-    st.dataframe(
-        s[s["quantity_available"]>0][["bank_id","habitat_name","quantity_available"]]
-          .sort_values("quantity_available", ascending=False).head(20),
-        use_container_width=True, hide_index=True
-    )
-except Exception as e:
-    st.warning(f"Stock sanity check failed: {e}")
 
 # ========= Proximity Audit =========
 with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t chosen)", expanded=False):
@@ -1386,6 +1378,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
