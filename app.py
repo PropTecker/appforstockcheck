@@ -103,6 +103,15 @@ def safe_json(r: requests.Response) -> Dict[str, Any]:
             f"Response starts with: {text_preview}"
         )
 
+def http_post(url, data=None, headers=None, timeout=25):
+    try:
+        r = requests.post(url, data=data or {}, headers=headers or UA, timeout=timeout)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        raise RuntimeError(f"HTTP POST error for {url}: {e}")
+
+
 # =========================
 # Geocoding / lookups
 # =========================
@@ -156,23 +165,39 @@ def arcgis_point_query(layer_url: str, lat: float, lon: float, out_fields: str) 
     return feats[0] if feats else {}
 
 def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_field: str) -> List[str]:
+    """
+    Query ArcGIS with POST to avoid 414 (URI Too Large) when sending polygon geometries.
+    We also use geometryPrecision to reduce payload size. Returns all features that INTERSECT
+    the given polygon (this includes the polygon itself; we filter the caller’s own name later).
+    """
     if not polygon_geom:
         return []
-    params = {
+
+    # ArcGIS accepts either rings (polygon) or an envelope. We keep the polygon for correctness,
+    # but reduce coordinate precision to shrink payload size.
+    data = {
         "f": "json",
         "where": "1=1",
-        "geometry": json.dumps(polygon_geom),
+        "geometry": json.dumps(polygon_geom),           # full polygon, but…
         "geometryType": "esriGeometryPolygon",
         "inSR": 4326,
         "spatialRel": "esriSpatialRelIntersects",
         "outFields": name_field,
         "returnGeometry": "false",
-        "outSR": 4326
+        "outSR": 4326,
+
+        # Light server-side simplification: trims coordinate precision to reduce bytes.
+        # (This does NOT generalize topology; it just shortens numbers.)
+        "geometryPrecision": 5,   # ~1e-5 deg ≈ 1 m-ish
+        # Optional generalization for very complex polygons:
+        # "maxAllowableOffset": 0.0001,  # ~11 m in WGS84 (tune if needed)
     }
-    r = http_get(f"{layer_url}/query", params=params)
+
+    r = http_post(f"{layer_url}/query", data=data)
     js = safe_json(r)
     names = [ (f.get("attributes") or {}).get(name_field) for f in js.get("features", []) ]
     return sorted({n for n in names if n})
+
 
 def tier_for_bank(bank_lpa: str, bank_nca: str, t_lpa: str, t_nca: str, lpa_neigh: List[str], nca_neigh: List[str]) -> str:
     if bank_lpa == t_lpa or bank_nca == t_nca:
