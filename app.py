@@ -2,9 +2,11 @@
 # - login gate
 # - hardened HTTP + POST helper (avoids 414)
 # - official distinctiveness trading rules
-# - diagnostics
+# - diagnostics + tier breakdown
 # - session persistence for LPA/NCA + neighbours + geoms (fixes "forgetting on rerun")
 # - map overlays for LPA/NCA polygons
+# - broadened candidate pool for Low/Medium per rules
+# - LP first, greedy fallback if LP returns "Infeasible"
 
 import json
 from io import StringIO, BytesIO
@@ -383,7 +385,7 @@ if (target_lat is not None) and (target_lon is not None):
 # Demand input (+ aliasing)
 # =========================
 st.subheader("2) Demand (units required)")
-default_demand = "Individual trees - Urban tree,8\nGrassland - Other neutral grassland,30"
+default_demand = "Individual trees - Rural tree,0.08\nGrassland - Other neutral grassland,0.3"
 demand_csv = st.text_area("CSV: habitat_name,units_required", value=default_demand, height=120)
 
 # Habitat alias map (add your common variants here to match official names)
@@ -500,7 +502,7 @@ def prepare_options(demand_df: pd.DataFrame,
 
         cand_parts = []
 
-        # 1) Explicit TradingRules for this demand
+        # 1) Explicit TradingRules for this demand (always allowed)
         for rule in trade_idx.get(dem_hab, []):
             sh = rule["supply_habitat"]
             s_min = rule["min_distinctiveness_name"]
@@ -512,13 +514,35 @@ def prepare_options(demand_df: pd.DataFrame,
             if not df_s.empty:
                 cand_parts.append(df_s)
 
-        # 2) If no explicit rule, allow like-for-like subject to official rules
+        # 2) Build implicit candidates from official rules when no explicit TradingRules
         if not cand_parts:
-            df_s = stock_full[stock_full["habitat_name"] == dem_hab].copy()
-            df_s["companion_habitat"] = ""
-            df_s["companion_ratio"] = 0.0
-            if not df_s.empty:
-                cand_parts.append(df_s)
+            d_key = (d_dist or "").strip().lower()
+
+            if d_key == "low":
+                # Low → ANY stock row is eligible to be considered
+                df_s = stock_full.copy()
+                df_s["companion_habitat"] = ""
+                df_s["companion_ratio"] = 0.0
+                if not df_s.empty:
+                    cand_parts.append(df_s)
+
+            elif d_key == "medium":
+                # Medium → same broader group OR higher distinctiveness (across any group)
+                same_group = stock_full["broader_type"].fillna("").astype(str).eq(d_broader)
+                higher_dist = stock_full["distinctiveness_name"].map(lambda x: dval(x)) > dval(d_dist)
+                df_s = stock_full[ same_group | higher_dist ].copy()
+                df_s["companion_habitat"] = ""
+                df_s["companion_ratio"] = 0.0
+                if not df_s.empty:
+                    cand_parts.append(df_s)
+
+            else:
+                # High / Very High (or unknown) → like-for-like only
+                df_s = stock_full[stock_full["habitat_name"] == dem_hab].copy()
+                df_s["companion_habitat"] = ""
+                df_s["companion_ratio"] = 0.0
+                if not df_s.empty:
+                    cand_parts.append(df_s)
 
         if not cand_parts:
             continue
@@ -606,9 +630,48 @@ def optimise(demand_df: pd.DataFrame,
             prob += pulp.lpSum([x[i] for i in idxs]) <= cap_val, f"cap_{stock_id}"
 
         prob.solve(pulp.PULP_CBC_CMD(msg=False))
-        if pulp.LpStatus[prob.status] not in ("Optimal", "Feasible"):
-            raise RuntimeError(f"Optimiser status: {pulp.LpStatus[prob.status]}")
+        status_str = pulp.LpStatus[prob.status]
+        if status_str not in ("Optimal", "Feasible"):
+            # Auto-fallback: try greedy using the same options
+            rows, total_cost = [], 0.0
+            from collections import defaultdict
+            remain = defaultdict(float)
+            for opt in options:
+                remain[opt["stock_id"]] = max(remain[opt["stock_id"]], opt["stock_cap"])
 
+            for di, drow in demand_df.iterrows():
+                rem_need = float(drow["units_required"])
+                cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di]
+                cand.sort(key=lambda i: options[i]["unit_price"] / max(options[i]["srm_mult"], 1e-9))
+                for i in cand:
+                    if rem_need <= 1e-9: break
+                    opt = options[i]
+                    cap = remain.get(opt["stock_id"], 0.0)
+                    if cap <= 1e-9: continue
+                    need = rem_need / max(opt["srm_mult"], 1e-9)
+                    take = min(cap, need)
+                    if take <= 1e-9: continue
+                    remain[opt["stock_id"]] -= take
+                    eff = take * opt["srm_mult"]
+                    rem_need -= eff
+                    cost = take * opt["unit_price"]
+                    total_cost += cost
+                    rows.append({
+                        "demand_habitat": opt["demand_habitat"],
+                        "bank_id": opt["bank_id"],
+                        "stock_id": opt["stock_id"],
+                        "supply_habitat": opt["supply_habitat"],
+                        "tier": opt["tier"],
+                        "units_supplied": take,
+                        "effective_units": eff,
+                        "unit_price": opt["unit_price"],
+                        "cost": cost
+                    })
+                if rem_need > 1e-6:
+                    raise RuntimeError(f"Optimiser status: {status_str} (and greedy also could not satisfy demand for {drow['habitat_name']}, short by {rem_need:.3f})")
+            return pd.DataFrame(rows), float(total_cost), chosen_size
+
+        # Extract LP solution
         rows, total_cost = [], 0.0
         for i, var in enumerate(x):
             qty = var.value() or 0.0
@@ -628,7 +691,7 @@ def optimise(demand_df: pd.DataFrame,
             total_cost += qty * opt["unit_price"]
         return pd.DataFrame(rows), float(total_cost), chosen_size
 
-    # Greedy fallback
+    # Greedy fallback when PuLP not installed
     rows, total_cost = [], 0.0
     for di, drow in demand_df.iterrows():
         rem = float(drow["units_required"])
@@ -790,11 +853,19 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                     st.error("✖ TradingRules present but produced no stock rows. Check names/distinctiveness thresholds.")
                     continue
             else:
-                df_s = stock_full[stock_full["habitat_name"] == dem].copy()
+                d_key = d_dist.lower()
+                if d_key == "low":
+                    df_s = stock_full.copy()
+                elif d_key == "medium":
+                    same_group = stock_full["broader_type"].fillna("").astype(str).eq(d_broader)
+                    higher_dist = stock_full["distinctiveness_name"].map(dval) > dval(d_dist)
+                    df_s = stock_full[same_group | higher_dist].copy()
+                else:
+                    df_s = stock_full[stock_full["habitat_name"] == dem].copy()
                 df_s["companion_habitat"] = ""
                 df_s["companion_ratio"] = 0.0
                 if df_s.empty:
-                    st.error("✖ No like-for-like stock rows found. Add stock or TradingRules.")
+                    st.error("✖ No candidates found from official rules. Add stock or TradingRules.")
                     continue
                 parts.append(df_s)
 
@@ -857,13 +928,18 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 if reasons: st.caption("\n".join(reasons))
                 continue
 
+            # Capacity summary and tier breakdown
             cand2["eff_from_primary"] = cand2["stock_cap"] * cand2["srm_mult"]
             eff_cap = cand2["eff_from_primary"].sum()
 
-            comp_rows = cand2[cand2["companion_habitat"] == dem]
-            if not comp_rows.empty:
-                cand2["eff_from_companion"] = cand2["stock_cap"] * cand2["companion_ratio"] * cand2["srm_mult"]
-                eff_cap += cand2["eff_from_companion"].sum()
+            st.write("**Tier breakdown of candidates kept:**")
+            st.dataframe(
+                cand2.groupby("tier", as_index=False).agg(
+                    options=("tier","count"),
+                    eff_capacity=("eff_from_primary","sum")
+                ),
+                use_container_width=True, hide_index=True
+            )
 
             st.dataframe(cand2.sort_values(["unit_price","tier","bank_id"]),
                          use_container_width=True, hide_index=True)
@@ -943,6 +1019,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
