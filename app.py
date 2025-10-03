@@ -1,10 +1,20 @@
-# app.py — BNG Optimiser (Standalone), v8
-# New in v8:
-# - Pricing column normalisation: reads price from 'Price' / 'price' / 'Unit Price' etc. and coerces to float.
-# - Bank identity: use BANK KEY = bank_name (if present) else bank_id.
-#   This ensures distinct banks under the same bank_id are treated separately in pricing, stock, and optimisation.
-# - Keeps v7 rules: Medium => same group ≥ Medium else ANY group with higher distinctiveness; Low => any; High/Very High => like-for-like.
-# - Everything else unchanged: auto-locate, ≤2 banks, local/adjacent-first, Net Gain line, diagnostics, proximity audit, map overlay.
+# app.py — BNG Optimiser (Standalone), v9
+# v9 fixes:
+# - Robust BANK_KEY builder: uses bank_name if available on any sheet (Banks/Stock/Pricing), else falls back to bank_id.
+#   No KeyError if bank_name is absent.
+# - Keeps v8 improvements: Pricing 'Price' column normalization, Medium rule (same group ≥ Medium else ANY higher distinctiveness),
+#   High/Very High like-for-like, Low any, local/adjacent-first, ≤2 banks, Net Gain input, diagnostics, proximity audit, map overlay.
+#
+# requirements.txt:
+# streamlit>=1.37
+# pandas>=2.1
+# numpy>=1.26
+# requests>=2.31
+# streamlit-folium>=0.18
+# folium>=0.16
+# openpyxl>=3.1
+# xlsxwriter>=3.2
+# pulp>=2.7  # optional; greedy fallback if missing
 
 import json
 import re
@@ -262,25 +272,32 @@ if backend is None:
     st.warning("Upload your backend workbook to continue.", icon="⚠️")
     st.stop()
 
-# ========= Normalise BANK KEY (bank_name preferred) =========
-# Add BANK_KEY to Banks, Pricing, Stock for consistent identity
-def make_bank_key_col(df: pd.DataFrame, banks_df: pd.DataFrame, bank_id_col: str = "bank_id") -> pd.DataFrame:
+# ========= Normalise BANK_KEY everywhere (bank_name preferred where available) =========
+def make_bank_key_col(df: pd.DataFrame, banks_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Ensure df has BANK_KEY.
+    - Prefer df.bank_name if present/non-empty,
+    - Else try to merge banks_df['bank_id','bank_name'] and use that,
+    - Else fall back to df.bank_id.
+    Never assumes bank_name exists; safe for any input df.
+    """
     out = df.copy()
-    # Attach bank_name from Banks (if not already present)
-    cols_to_merge = ["bank_id"]
-    if "bank_name" in banks_df.columns:
-        cols_to_merge.append("bank_name")
-    m = banks_df[cols_to_merge].drop_duplicates()
-    out = out.merge(m, on="bank_id", how="left")
-    # BANK_KEY: prefer bank_name if present, else bank_id
-    out["BANK_KEY"] = out["bank_name"].where(out["bank_name"].astype(str).str.strip().ne(""), out["bank_id"])
+    # Already has bank_name?
+    has_df_name = "bank_name" in out.columns and out["bank_name"].astype(str).str.strip().ne("").any()
+
+    if not has_df_name:
+        # Try to bring bank_name from Banks
+        if "bank_id" in out.columns and "bank_id" in banks_df.columns and "bank_name" in banks_df.columns:
+            m = banks_df[["bank_id","bank_name"]].drop_duplicates()
+            out = out.merge(m, on="bank_id", how="left")
+
+    if "bank_name" in out.columns:
+        out["BANK_KEY"] = out["bank_name"].where(out["bank_name"].astype(str).str.strip().ne(""), out.get("bank_id"))
+    else:
+        out["BANK_KEY"] = out.get("bank_id")
+
     out["BANK_KEY"] = out["BANK_KEY"].map(sstr)
     return out
-
-backend["Banks"]["BANK_KEY"] = backend["Banks"]["bank_name"].where(
-    backend["Banks"].get("bank_name", pd.Series(dtype=object)).astype(str).str.strip().ne(""),
-    backend["Banks"]["bank_id"]
-).map(sstr)
 
 # ========= Apply quotes policy if WITH_STOCK columns exist =========
 if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["Stock"].columns:
@@ -360,6 +377,7 @@ def enrich_banks_geography(banks_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 backend["Banks"] = enrich_banks_geography(backend["Banks"])
+backend["Banks"] = make_bank_key_col(backend["Banks"], backend["Banks"])  # ensure BANK_KEY on Banks itself
 
 # ========= Validate minimal columns =========
 for sheet, cols in {
@@ -375,24 +393,27 @@ for sheet, cols in {
 # ========= Normalise Pricing columns (price, size, tier) =========
 def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     df = pr_df.copy()
-    # Standardise common column names/cases
-    # Create 'price' from possible variants
+    # 'price' from common variants
     price_cols = [c for c in df.columns if c.strip().lower() in ("price","unit price","unit_price","unitprice")]
     if not price_cols:
         st.error("Pricing sheet must contain a 'Price' column (or 'Unit Price').")
         st.stop()
     df["price"] = pd.to_numeric(df[price_cols[0]], errors="coerce")
+
     # Normalise tier & size to lowercase strings
     df["tier"] = df["tier"].astype(str).str.strip().str.lower()
     df["contract_size"] = df["contract_size"].astype(str).str.strip().str.lower()
-    # Ensure bank_id string and attach BANK_KEY
+
+    # Ensure ids as string, attach BANK_KEY (safe even if bank_name absent)
     df["bank_id"] = df["bank_id"].astype(str).str.strip()
     df = make_bank_key_col(df, backend["Banks"])
+
     # Keep group/distinctiveness if present (may be blank)
     if "broader_type" not in df.columns:
         df["broader_type"] = ""
     if "distinctiveness_name" not in df.columns:
         df["distinctiveness_name"] = ""
+
     # Habitat name as string
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
     return df
@@ -600,8 +621,8 @@ def prepare_options(demand_df: pd.DataFrame,
     for df, cols in [
         (Banks, ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name","lat","lon","postcode","address"]),
         (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
-        (Stock, ["habitat_name","stock_id","bank_id","quantity_available"]),
-        (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price","broader_type","distinctiveness_name"]),
+        (Stock, ["habitat_name","stock_id","bank_id","quantity_available","bank_name"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price","broader_type","distinctiveness_name","bank_name"]),
         (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
     ]:
         if not df.empty:
@@ -609,7 +630,7 @@ def prepare_options(demand_df: pd.DataFrame,
                 if c in df.columns:
                     df[c] = df[c].map(sstr)
 
-    # Attach BANK_KEY to Stock
+    # Attach BANK_KEY to Stock (safe even if no bank_name anywhere)
     Stock = make_bank_key_col(Stock, Banks)
 
     stock_full = Stock.merge(Banks[["bank_id","BANK_KEY","bank_name","lpa_name","nca_name"]], on="bank_id", how="left") \
@@ -630,12 +651,12 @@ def prepare_options(demand_df: pd.DataFrame,
         pc_join["distinctiveness_name"].astype(str).str.len() > 0,
         pc_join["distinctiveness_name_cat"]
     )
-    for c in ["broader_type_eff", "distinctiveness_name_eff", "tier", "bank_id", "habitat_name", "BANK_KEY"]:
+    for c in ["broader_type_eff", "distinctiveness_name_eff", "tier", "bank_id", "habitat_name", "BANK_KEY", "bank_name"]:
         if c in pc_join.columns:
             pc_join[c] = pc_join[c].map(sstr)
     pricing_enriched = pc_join  # use from here on
 
-    # Trading index (still supported)
+    # Trading index (optional overrides)
     trade_idx = {}
     if not Trading.empty:
         for _, r in Trading.iterrows():
@@ -719,7 +740,7 @@ def prepare_options(demand_df: pd.DataFrame,
             return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
 
         if d_key == "medium":
-            # 2a) Preferred: same group with distinctiveness >= Medium
+            # Preferred: same group with distinctiveness >= Medium
             grp_same = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
             if not grp_same.empty:
                 grp_same["_dval"] = grp_same["distinctiveness_name_eff"].map(dval)
@@ -728,7 +749,7 @@ def prepare_options(demand_df: pd.DataFrame,
                     r = grp_same.sort_values("price").iloc[0]
                     return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
 
-            # 2b) ANY group with distinctiveness strictly higher than Medium
+            # Else: ANY group with distinctiveness strictly higher than Medium
             grp_any_higher = grp.assign(_dval=grp["distinctiveness_name_eff"].map(dval))
             grp_any_higher = grp_any_higher[grp_any_higher["_dval"] > d_num]
             if not grp_any_higher.empty:
@@ -742,7 +763,6 @@ def prepare_options(demand_df: pd.DataFrame,
 
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
-        required = float(drow["units_required"])
 
         # Special Net Gain behaves like Low distinctiveness
         if dem_hab == NET_GAIN_LABEL:
@@ -755,9 +775,9 @@ def prepare_options(demand_df: pd.DataFrame,
 
         # Candidate stock via explicit Trading or official rules
         cand_parts = []
-        # Join for convenience
-        explicit_list = []
+        explicit = False
         if not Trading.empty and dem_hab in set(Trading["demand_habitat"].astype(str)):
+            explicit = True
             for _, rule in Trading[Trading["demand_habitat"] == dem_hab].iterrows():
                 sh = sstr(rule["allowed_supply_habitat"])
                 s_min = sstr(rule.get("min_distinctiveness_name"))
@@ -765,7 +785,6 @@ def prepare_options(demand_df: pd.DataFrame,
                 if s_min:
                     df_s = df_s[df_s["distinctiveness_name"].map(lambda x: dval(x)) >= dval(s_min)]
                 if not df_s.empty: cand_parts.append(df_s)
-            explicit_list = cand_parts[:]
 
         if not cand_parts:
             key = d_dist.lower()
@@ -786,7 +805,6 @@ def prepare_options(demand_df: pd.DataFrame,
 
         # Normal (direct) options — with proxy pricing if needed
         for _, s in candidates.iterrows():
-            explicit = bool(explicit_list)
             if not enforce_catalog_rules_official(
                 pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
                 s, dist_levels_map, explicit_rule=explicit
@@ -895,14 +913,15 @@ def optimise(demand_df: pd.DataFrame,
         idx_by_dem.setdefault(opt["demand_idx"], []).append(i)
 
     # ---- MILP (prefer 1 bank; ≤2 max); prioritise local/adjacent over far; prefer direct over paired on ties
-    if _HAS_PULP:
+    try:
+        import pulp  # ensure available here
         def solve_with_bank_limit(max_banks: int) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
             prob = pulp.LpProblem("BNG_Allocation_MILP", pulp.LpMinimize)
             x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
             bank_keys = sorted({opt["BANK_KEY"] for opt in options})
             y = {b: pulp.LpVariable(f"y_{norm_name(b)}", lowBound=0, upBound=1, cat="Binary") for b in bank_keys}
 
-            # objective: BIG * FAR usage + cost + tiny penalties (fewer banks, prefer direct)
+            # objective
             total_units_req = float(demand_df["units_required"].sum())
             max_price = max([o["unit_price"] for o in options]) if options else 1.0
             BIG = max(1.0, max_price) * max(1.0, total_units_req) * 1000.0
@@ -916,7 +935,7 @@ def optimise(demand_df: pd.DataFrame,
 
             prob += BIG * far_usage + cost_term + bank_pen + pair_pen
 
-            # link x to bank y with big-M per BANK_KEY
+            # link x to bank y
             M_bank: Dict[str, float] = {b: 0.0 for b in bank_keys}
             for sid, cap in stock_caps.items():
                 bkey = stock_bankkey.get(sid, "")
@@ -984,97 +1003,99 @@ def optimise(demand_df: pd.DataFrame,
         alloc_df, total_cost = res
         return alloc_df, total_cost, chosen_size
 
-    # ---- Greedy fallback (prefer 1 bank; else best 2). Prioritise non-far first; paired deprioritised on ties
-    from collections import defaultdict
+    except Exception:
+        # ---- Greedy fallback (prefer 1 bank; else best 2)
+        from collections import defaultdict
 
-    options_by_bank: Dict[str, List[int]] = defaultdict(list)
-    for i, opt in enumerate(options):
-        options_by_bank[opt["BANK_KEY"]].append(i)
+        # options_by_bank
+        options_by_bank: Dict[str, List[int]] = defaultdict(list)
+        for i, opt in enumerate(options):
+            options_by_bank[opt["BANK_KEY"]].append(i)
 
-    def greedy_for_banks(allowed_banks: List[str]) -> Tuple[bool, pd.DataFrame, float]:
-        caps = stock_caps.copy()
-        rows = []
+        def greedy_for_banks(allowed_banks: List[str]) -> Tuple[bool, pd.DataFrame, float]:
+            caps = stock_caps.copy()
+            rows = []
 
-        for di, drow in demand_df.iterrows():
-            need = float(drow["units_required"])
-            cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di and opt["BANK_KEY"] in allowed_banks]
-            # sort by proximity first (local/adjacent before far), then price, then prefer direct on ties
-            cand.sort(key=lambda i: (
-                1 if options[i]["proximity"] == "far" else 0,
-                options[i]["unit_price"],
-                1 if options[i]["type"] == "paired" else 0
-            ))
-            for i in cand:
-                if need <= 1e-9: break
-                opt = options[i]
-                # max take limited by all stocks in this option
-                max_take = float('inf')
-                for sid, coef in opt["stock_use"].items():
-                    if coef <= 0: continue
-                    max_take = min(max_take, caps.get(sid, 0.0) / coef if coef > 0 else float('inf'))
-                if max_take <= 1e-9:
-                    continue
-                take = min(max_take, need)
-                for sid, coef in opt["stock_use"].items():
-                    caps[sid] = caps.get(sid, 0.0) - coef * take
-                rows.append({
-                    "demand_habitat": opt["demand_habitat"],
-                    "BANK_KEY": opt["BANK_KEY"],
-                    "bank_name": opt.get("bank_name",""),
-                    "bank_id": opt.get("bank_id",""),
-                    "supply_habitat": opt["supply_habitat"],
-                    "allocation_type": opt["type"],
-                    "tier": opt["tier"],
-                    "units_supplied": take,
-                    "unit_price": opt["unit_price"],
-                    "cost": take * opt["unit_price"],
-                    "price_source": opt.get("price_source",""),
-                    "price_habitat": opt.get("price_habitat",""),
-                })
-                need -= take
-            if need > 1e-6:
-                return False, pd.DataFrame(), 0.0
-        df = pd.DataFrame(rows)
-        return True, df, float(df["cost"].sum()) if not df.empty else 0.0
+            for di, drow in demand_df.iterrows():
+                need = float(drow["units_required"])
+                cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di and opt["BANK_KEY"] in allowed_banks]
+                # sort by proximity first (local/adjacent before far), then price, then prefer direct on ties
+                cand.sort(key=lambda i: (
+                    1 if options[i]["proximity"] == "far" else 0,
+                    options[i]["unit_price"],
+                    1 if options[i]["type"] == "paired" else 0
+                ))
+                for i in cand:
+                    if need <= 1e-9: break
+                    opt = options[i]
+                    # max take limited by all stocks in this option
+                    max_take = float('inf')
+                    for sid, coef in opt["stock_use"].items():
+                        if coef <= 0: continue
+                        max_take = min(max_take, caps.get(sid, 0.0) / coef if coef > 0 else float('inf'))
+                    if max_take <= 1e-9:
+                        continue
+                    take = min(max_take, need)
+                    for sid, coef in opt["stock_use"].items():
+                        caps[sid] = caps.get(sid, 0.0) - coef * take
+                    rows.append({
+                        "demand_habitat": opt["demand_habitat"],
+                        "BANK_KEY": opt["BANK_KEY"],
+                        "bank_name": opt.get("bank_name",""),
+                        "bank_id": opt.get("bank_id",""),
+                        "supply_habitat": opt["supply_habitat"],
+                        "allocation_type": opt["type"],
+                        "tier": opt["tier"],
+                        "units_supplied": take,
+                        "unit_price": opt["unit_price"],
+                        "cost": take * opt["unit_price"],
+                        "price_source": opt.get("price_source",""),
+                        "price_habitat": opt.get("price_habitat",""),
+                    })
+                    need -= take
+                if need > 1e-6:
+                    return False, pd.DataFrame(), 0.0
+            df = pd.DataFrame(rows)
+            return True, df, float(df["cost"].sum()) if not df.empty else 0.0
 
-    # Rank banks: any with non-far options first (by their cheapest non-far price), then far-only banks (by cheapest price)
-    banks_with_nonfar = []
-    banks_far_only = []
-    cheapest_nonfar = {}
-    cheapest_any = {}
+        # Rank banks: any with non-far options first (by their cheapest non-far price), then far-only banks (by cheapest price)
+        banks_with_nonfar = []
+        banks_far_only = []
+        cheapest_nonfar = {}
+        cheapest_any = {}
 
-    for b, idxs in options_by_bank.items():
-        prices_nonfar = [options[i]["unit_price"] for i in idxs if options[i]["proximity"] != "far"]
-        prices_all    = [options[i]["unit_price"] for i in idxs]
-        if prices_nonfar:
-            banks_with_nonfar.append(b)
-            cheapest_nonfar[b] = min(prices_nonfar)
-        if prices_all:
-            cheapest_any[b] = min(prices_all)
-        if not prices_nonfar and prices_all:
-            banks_far_only.append(b)
+        for b, idxs in options_by_bank.items():
+            prices_nonfar = [options[i]["unit_price"] for i in idxs if options[i]["proximity"] != "far"]
+            prices_all    = [options[i]["unit_price"] for i in idxs]
+            if prices_nonfar:
+                banks_with_nonfar.append(b)
+                cheapest_nonfar[b] = min(prices_nonfar)
+            if prices_all:
+                cheapest_any[b] = min(prices_all)
+            if not prices_nonfar and prices_all:
+                banks_far_only.append(b)
 
-    banks_with_nonfar.sort(key=lambda bb: cheapest_nonfar[bb])
-    banks_far_only.sort(key=lambda bb: cheapest_any[bb])
-    bank_order_pref = banks_with_nonfar + banks_far_only
+        banks_with_nonfar.sort(key=lambda bb: cheapest_nonfar[bb])
+        banks_far_only.sort(key=lambda bb: cheapest_any[bb])
+        bank_order_pref = banks_with_nonfar + banks_far_only
 
-    # try 1 bank (prefer non-far capable)
-    for b in bank_order_pref:
-        ok, df, cost = greedy_for_banks([b])
-        if ok:
-            return df, cost, chosen_size
+        # try 1 bank
+        for b in bank_order_pref:
+            ok, df, cost = greedy_for_banks([b])
+            if ok:
+                return df, cost, chosen_size
 
-    # try best pairs (keep ≤2 banks)
-    n = len(bank_order_pref)
-    best_df, best_cost = None, float("inf")
-    for i in range(n):
-        for j in range(i+1, n):
-            ok, df, cost = greedy_for_banks([bank_order_pref[i], bank_order_pref[j]])
-            if ok and cost < best_cost:
-                best_df, best_cost = df, cost
-    if best_df is None:
-        raise RuntimeError("Infeasible even with two banks in greedy fallback.")
-    return best_df, best_cost, chosen_size
+        # try best pairs (≤2 banks)
+        n = len(bank_order_pref)
+        best_df, best_cost = None, float("inf")
+        for i in range(n):
+            for j in range(i+1, n):
+                ok, df, cost = greedy_for_banks([bank_order_pref[i], bank_order_pref[j]])
+                if ok and cost < best_cost:
+                    best_df, best_cost = df, cost
+        if best_df is None:
+            raise RuntimeError("Infeasible even with two banks in greedy fallback.")
+        return best_df, best_cost, chosen_size
 
 # ========= Run optimiser UI =========
 st.subheader("3) Run optimiser")
@@ -1180,7 +1201,7 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
                                       on=["bank_id","habitat_name","tier"], how="left", indicator=True)
                 missing_adj = merged[(merged["tier"] == "adjacent") & (merged["_merge"] == "left_only")]
                 if not missing_adj.empty:
-                    st.warning("Missing ADJACENT exact pricing rows for some bank+habitat — group-proxy may still price Medium/Low where trading rules allow.")
+                    st.warning("Missing ADJACENT exact pricing rows for some bank+habitat — group-proxy may still price Medium/Low where rules allow.")
                     st.dataframe(missing_adj[["bank_id","habitat_name","tier"]], use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Audit error: {e}")
@@ -1292,11 +1313,9 @@ if run:
         if (target_lat is not None) and (target_lon is not None):
             fmap = render_base_map()
 
-            # Build BANK_KEY -> (lat,lon) using Banks
+            # Build BANK_KEY -> (lat,lon) using Banks (geocode if needed)
             bank_coords: Dict[str, Tuple[float,float]] = {}
             banks_df = backend["Banks"].copy()
-
-            # Try direct lat/lon; else geocode via postcode/address
             for _, b in banks_df.iterrows():
                 bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
                 loc = bank_row_to_latlon(b)
@@ -1353,6 +1372,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
