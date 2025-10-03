@@ -1,12 +1,12 @@
-# app.py — BNG Optimiser (Standalone) with:
+# app.py — BNG Optimiser (Standalone) hardened for NaN/floats in text columns
 # - login gate
-# - hardened HTTP + POST helper (avoids 414)
-# - official distinctiveness trading rules
-# - diagnostics + tier breakdown
-# - session persistence for LPA/NCA + neighbours + geoms (fixes "forgetting on rerun")
-# - map overlays for LPA/NCA polygons
-# - broadened candidate pool for Low/Medium per rules
-# - LP first, greedy fallback if LP returns "Infeasible"
+# - POST helper (avoids 414)
+# - session persistence for LPA/NCA, neighbours, geoms, lat/lon
+# - LPA/NCA polygons on map
+# - official trading rules
+# - broadened candidate pool for Low/Medium
+# - LP first, greedy fallback if LP "Infeasible"
+# - robust string handling via sstr()/lower_key()
 
 import json
 from io import StringIO, BytesIO
@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
 import pandas as pd
+import numpy as np
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
@@ -25,6 +26,19 @@ import folium
 st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
 st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
 st.caption("Upload backend workbook, locate target site, and optimise supply with SRM, official distinctiveness trading rules, and TradingRules.")
+
+# =========================
+# Safe string helpers (fixes 'float' object has no attribute strip)
+# =========================
+def sstr(x) -> str:
+    """Safe string: NaN/None -> '', else str(x).strip()."""
+    if x is None or (isinstance(x, float) and np.isnan(x)):
+        return ""
+    return str(x).strip()
+
+def lower_key(x) -> str:
+    """Lowercased safe string."""
+    return sstr(x).lower()
 
 # =========================
 # Login wall (secrets first, else fallback)
@@ -120,10 +134,6 @@ def safe_json(r: requests.Response) -> Dict[str, Any]:
 # Geo helpers (ESRI polygon -> GeoJSON)
 # =========================
 def esri_polygon_to_geojson(geom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Convert ArcGIS polygon geometry (rings) to GeoJSON Polygon/MultiPolygon.
-    Rings are lists of [x,y] == [lon,lat].
-    """
     if not geom or "rings" not in geom:
         return None
     rings = geom.get("rings") or []
@@ -131,7 +141,6 @@ def esri_polygon_to_geojson(geom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     if len(rings) == 1:
         return {"type": "Polygon", "coordinates": [rings[0]]}
-    # treat each ring as a separate polygon shell (ArcGIS may not flag holes clearly here)
     return {"type": "MultiPolygon", "coordinates": [[ring] for ring in rings]}
 
 def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weight: int, fill_opacity: float = 0.05):
@@ -148,29 +157,29 @@ def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weig
 # Geocoding / lookups
 # =========================
 def get_postcode_info(pc: str) -> Tuple[float, float, str]:
-    pc_clean = pc.replace(" ", "").upper()
+    pc_clean = sstr(pc).replace(" ", "").upper()
     r = http_get(POSTCODES_IO + pc_clean)
     js = safe_json(r)
     if js.get("status") != 200 or not js.get("result"):
         raise RuntimeError(f"Postcode lookup failed for '{pc}'.")
     data = js["result"]
-    return float(data["latitude"]), float(data["longitude"]), (data.get("admin_district") or data.get("admin_county") or "")
+    return float(data["latitude"]), float(data["longitude"]), sstr(data.get("admin_district") or data.get("admin_county"))
 
 def reverse_postcode(lat: float, lon: float) -> Optional[str]:
     r = http_get(POSTCODES_IO_REVERSE, params={"lon": lon, "lat": lat, "limit": 1})
     js = safe_json(r)
     res = js.get("result") or []
-    return (res[0] or {}).get("postcode") if res else None
+    return sstr((res[0] or {}).get("postcode")) if res else None
 
 def geocode_address(addr: str) -> Tuple[float, float]:
     # Nominatim
-    r = http_get(NOMINATIM_SEARCH, params={"q": addr, "format": "jsonv2", "limit": 1, "addressdetails": 0})
+    r = http_get(NOMINATIM_SEARCH, params={"q": sstr(addr), "format": "jsonv2", "limit": 1, "addressdetails": 0})
     js = safe_json(r)
     if isinstance(js, list) and js:
         lat, lon = js[0]["lat"], js[0]["lon"]
         return float(lat), float(lon)
     # Photon fallback
-    r = http_get("https://photon.komoot.io/api/", params={"q": addr, "limit": 1})
+    r = http_get("https://photon.komoot.io/api/", params={"q": sstr(addr), "limit": 1})
     js = safe_json(r)
     feats = js.get("features") or []
     if feats:
@@ -197,10 +206,6 @@ def arcgis_point_query(layer_url: str, lat: float, lon: float, out_fields: str) 
     return feats[0] if feats else {}
 
 def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_field: str) -> List[str]:
-    """
-    Query ArcGIS with POST to avoid 414 (URI Too Large) for complex polygons.
-    geometryPrecision trims decimals to reduce payload size.
-    """
     if not polygon_geom:
         return []
     data = {
@@ -217,10 +222,12 @@ def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_fie
     }
     r = http_post(f"{layer_url}/query", data=data)
     js = safe_json(r)
-    names = [ (f.get("attributes") or {}).get(name_field) for f in js.get("features", []) ]
+    names = [ sstr((f.get("attributes") or {}).get(name_field)) for f in js.get("features", []) ]
     return sorted({n for n in names if n})
 
 def tier_for_bank(bank_lpa: str, bank_nca: str, t_lpa: str, t_nca: str, lpa_neigh: List[str], nca_neigh: List[str]) -> str:
+    bank_lpa, bank_nca = sstr(bank_lpa), sstr(bank_nca)
+    t_lpa, t_nca = sstr(t_lpa), sstr(t_nca)
     if bank_lpa == t_lpa or bank_nca == t_nca:
         return "local"
     if (bank_lpa in lpa_neigh) or (bank_nca in nca_neigh):
@@ -299,11 +306,15 @@ for sheet, cols in {
         st.error(f"{sheet} is missing required columns: {missing}")
         st.stop()
 
-# Distinctiveness mapping (names → numeric rank; ensure Low<Medium<High<Very High)
+# Distinctiveness mapping (names → numeric rank)
 dist_levels_map = {
-    str(r["distinctiveness_name"]).strip(): float(r["level_value"])
+    sstr(r["distinctiveness_name"]): float(r["level_value"])
     for _, r in backend["DistinctivenessLevels"].iterrows()
 }
+# Also allow lowercase keys
+dist_levels_map.update({
+    k.lower(): v for k, v in list(dist_levels_map.items())
+})
 
 # =========================
 # Target site input
@@ -318,7 +329,7 @@ with st.container():
     with colC:
         run_locate = st.button("Locate")
 
-# Restore prior context from session (so reruns keep values for Optimise)
+# Restore prior context from session
 target_lpa_name = st.session_state.get("target_lpa_name", "")
 target_nca_name = st.session_state.get("target_nca_name", "")
 lpa_neighbors = st.session_state.get("lpa_neighbors", [])
@@ -331,10 +342,10 @@ nca_geojson = st.session_state.get("nca_geojson", None)
 if run_locate:
     try:
         # geocode
-        if postcode.strip():
-            lat, lon, _ = get_postcode_info(postcode.strip())
-        elif address.strip():
-            lat, lon = geocode_address(address.strip())
+        if sstr(postcode):
+            lat, lon, _ = get_postcode_info(postcode)
+        elif sstr(address):
+            lat, lon = geocode_address(address)
         else:
             st.error("Enter a postcode or an address.")
             st.stop()
@@ -342,8 +353,8 @@ if run_locate:
         # Fetch LPA/NCA at point
         lpa_feat = arcgis_point_query(LPA_URL, lat, lon, "LAD24NM")
         nca_feat = arcgis_point_query(NCA_URL, lat, lon, "NCA_Name")
-        target_lpa_name = (lpa_feat.get("attributes") or {}).get("LAD24NM", "")
-        target_nca_name = (nca_feat.get("attributes") or {}).get("NCA_Name", "")
+        target_lpa_name = sstr((lpa_feat.get("attributes") or {}).get("LAD24NM"))
+        target_nca_name = sstr((nca_feat.get("attributes") or {}).get("NCA_Name"))
 
         # Convert geoms for display and neighbour queries
         lpa_geom_esri = lpa_feat.get("geometry")
@@ -355,7 +366,7 @@ if run_locate:
         lpa_neighbors = [n for n in layer_intersect_names(LPA_URL, lpa_geom_esri, "LAD24NM") if n != target_lpa_name]
         nca_neighbors = [n for n in layer_intersect_names(NCA_URL, nca_geom_esri, "NCA_Name") if n != target_nca_name]
 
-        # Persist to session so Optimise & future reruns reuse them
+        # Persist to session
         st.session_state["target_lpa_name"] = target_lpa_name
         st.session_state["target_nca_name"] = target_nca_name
         st.session_state["lpa_neighbors"] = lpa_neighbors
@@ -369,13 +380,11 @@ if run_locate:
     except Exception as e:
         st.error(f"Location error: {e}")
 
-# --- Map (draw even on reruns using session_state) ---
+# --- Map (draw even on reruns) ---
 if (target_lat is not None) and (target_lon is not None):
     fmap = folium.Map(location=[target_lat, target_lon], zoom_start=11, control_scale=True)
-    # polygons
     add_geojson_layer(fmap, lpa_geojson, f"LPA: {target_lpa_name}" if target_lpa_name else "LPA", color="red", weight=2, fill_opacity=0.05)
     add_geojson_layer(fmap, nca_geojson, f"NCA: {target_nca_name}" if target_nca_name else "NCA", color="yellow", weight=3, fill_opacity=0.05)
-    # point
     folium.CircleMarker([target_lat, target_lon], radius=5, color="red", fill=True, tooltip="Target").add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
     st.markdown("### Map")
@@ -388,18 +397,17 @@ st.subheader("2) Demand (units required)")
 default_demand = "Individual trees - Rural tree,0.08\nGrassland - Other neutral grassland,0.3"
 demand_csv = st.text_area("CSV: habitat_name,units_required", value=default_demand, height=120)
 
-# Habitat alias map (add your common variants here to match official names)
+# Habitat alias map
 HAB_ALIAS = {
     "Urban tree": "Individual trees - Urban tree",
     "Urban trees": "Individual trees - Urban tree",
     "Tree - Urban": "Individual trees - Urban tree",
-    # Add more as needed
 }
 cat_names = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-lower_map = {x.lower(): x for x in cat_names}
+lower_map = {sstr(x).lower(): sstr(x) for x in cat_names}
 
 def normalise_hab(name: str) -> str:
-    n = (name or "").strip()
+    n = sstr(name)
     if n in HAB_ALIAS: return HAB_ALIAS[n]
     return lower_map.get(n.lower(), n)
 
@@ -407,25 +415,17 @@ def normalise_hab(name: str) -> str:
 # OFFICIAL trading rules helper
 # =========================
 def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
-    """
-    Official logic from distinctiveness table:
-
-    - Low demand  → can be traded for anything (any group, any distinctiveness).
-    - Medium demand → allowed if (same broader group) OR (supply has higher distinctiveness).
-    - High / Very High demand → like-for-like ONLY (same habitat_name).
-    - If an explicit TradingRules row applies for this demand, it overrides these checks.
-    """
     if explicit_rule:
-        return True  # explicit TradingRules entry allows this substitution
+        return True
 
-    dh = str(demand_row.get("habitat_name", "")).strip()
-    sh = str(supply_row.get("habitat_name", "")).strip()
+    dh = sstr(demand_row.get("habitat_name"))
+    sh = sstr(supply_row.get("habitat_name"))
 
-    d_group = str(demand_row.get("broader_type", "") or "").strip()
-    s_group = str(supply_row.get("broader_type", "") or "").strip()
+    d_group = sstr(demand_row.get("broader_type"))
+    s_group = sstr(supply_row.get("broader_type"))
 
-    d_dist_name = str(demand_row.get("distinctiveness_name", "") or "").strip()
-    s_dist_name = str(supply_row.get("distinctiveness_name", "") or "").strip()
+    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
+    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
 
     d_key = d_dist_name.lower()
     s_key = s_dist_name.lower()
@@ -433,21 +433,17 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
     d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
     s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_key, -1e9))
 
-    # Low → anything
     if d_key == "low":
         return True
 
-    # Medium → same group OR strictly higher distinctiveness
     if d_key == "medium":
         same_group = (d_group and s_group and d_group == s_group)
         higher_distinctiveness = (s_val > d_val)
         return bool(same_group or higher_distinctiveness)
 
-    # High / Very High → like-for-like only
     if d_key in ("high", "very high", "very_high", "very-high"):
         return sh == dh
 
-    # Unknown label fallback: behave like Medium
     same_group = (d_group and s_group and d_group == s_group)
     higher_distinctiveness = (s_val > d_val)
     return bool(same_group or higher_distinctiveness)
@@ -466,7 +462,20 @@ def prepare_options(demand_df: pd.DataFrame,
     SRM = backend["SRM"].copy()
     Trading = backend.get("TradingRules", pd.DataFrame())
 
-    srm_map = {r["tier"]: float(r["multiplier"]) for _, r in SRM.iterrows()}
+    # clean string columns we depend on
+    for df, cols in [
+        (Banks, ["lpa_name","nca_name"]),
+        (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
+        (Stock, ["habitat_name","stock_id"]),
+        (Pricing, ["habitat_name","contract_size","tier"]),
+        (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
+    ]:
+        if not df.empty:
+            for c in cols:
+                if c in df.columns:
+                    df[c] = df[c].map(sstr)
+
+    srm_map = {sstr(r["tier"]): float(r["multiplier"]) for _, r in SRM.iterrows()}
 
     # Merge stock with bank context + catalog
     stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
@@ -478,24 +487,25 @@ def prepare_options(demand_df: pd.DataFrame,
     trade_idx = {}
     if not Trading.empty:
         for _, r in Trading.iterrows():
-            trade_idx.setdefault(str(r["demand_habitat"]).strip(), []).append({
-                "supply_habitat": str(r["allowed_supply_habitat"]).strip(),
-                "min_distinctiveness_name": str(r.get("min_distinctiveness_name","")).strip() or None,
-                "companion_habitat": str(r.get("companion_habitat","")).strip() or None,
-                "companion_ratio": float(r.get("companion_ratio",0) or 0.0),
+            trade_idx.setdefault(sstr(r["demand_habitat"]), []).append({
+                "supply_habitat": sstr(r["allowed_supply_habitat"]),
+                "min_distinctiveness_name": sstr(r.get("min_distinctiveness_name")),
+                "companion_habitat": sstr(r.get("companion_habitat")),
+                "companion_ratio": float(r.get("companion_ratio", 0) or 0.0),
             })
 
     options = []
     remaining = {}
 
     def dval(name: Optional[str]) -> float:
-        return dist_levels_map.get((name or "").strip(), -1e9)
+        key = sstr(name)
+        return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
 
     for di, drow in demand_df.iterrows():
-        dem_hab = str(drow["habitat_name"]).strip()
+        dem_hab = sstr(drow["habitat_name"])
         dcat = Catalog[Catalog["habitat_name"] == dem_hab]
-        d_broader = str(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
-        d_dist = str(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
+        d_broader = sstr(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
+        d_dist = sstr(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
         drow = drow.copy()
         drow["broader_type"] = d_broader
         drow["distinctiveness_name"] = d_dist
@@ -516,10 +526,9 @@ def prepare_options(demand_df: pd.DataFrame,
 
         # 2) Build implicit candidates from official rules when no explicit TradingRules
         if not cand_parts:
-            d_key = (d_dist or "").strip().lower()
+            d_key = d_dist.lower()
 
             if d_key == "low":
-                # Low → ANY stock row is eligible to be considered
                 df_s = stock_full.copy()
                 df_s["companion_habitat"] = ""
                 df_s["companion_ratio"] = 0.0
@@ -527,8 +536,7 @@ def prepare_options(demand_df: pd.DataFrame,
                     cand_parts.append(df_s)
 
             elif d_key == "medium":
-                # Medium → same broader group OR higher distinctiveness (across any group)
-                same_group = stock_full["broader_type"].fillna("").astype(str).eq(d_broader)
+                same_group = stock_full["broader_type"].fillna("").astype(str).map(sstr).eq(d_broader)
                 higher_dist = stock_full["distinctiveness_name"].map(lambda x: dval(x)) > dval(d_dist)
                 df_s = stock_full[ same_group | higher_dist ].copy()
                 df_s["companion_habitat"] = ""
@@ -537,7 +545,6 @@ def prepare_options(demand_df: pd.DataFrame,
                     cand_parts.append(df_s)
 
             else:
-                # High / Very High (or unknown) → like-for-like only
                 df_s = stock_full[stock_full["habitat_name"] == dem_hab].copy()
                 df_s["companion_habitat"] = ""
                 df_s["companion_ratio"] = 0.0
@@ -571,20 +578,21 @@ def prepare_options(demand_df: pd.DataFrame,
                 continue
 
             unit_price = float(price_row["price"].iloc[0])
+            cap = float(s.get("quantity_available", 0) or 0.0)
             options.append({
                 "demand_idx": di,
                 "demand_habitat": dem_hab,
                 "bank_id": s["bank_id"],
-                "stock_id": s["stock_id"],
+                "stock_id": sstr(s["stock_id"]),
                 "supply_habitat": s["habitat_name"],
                 "tier": tier,
                 "unit_price": unit_price,
                 "srm_mult": float(srm_map.get(tier, 0.5)),
-                "stock_cap": float(s["quantity_available"]),
-                "companion_habitat": s.get("companion_habitat","") or "",
+                "stock_cap": cap,
+                "companion_habitat": sstr(s.get("companion_habitat")),
                 "companion_ratio": float(s.get("companion_ratio",0.0) or 0.0),
             })
-            remaining[options[-1]["stock_id"]] = max(remaining.get(options[-1]["stock_id"], 0.0), float(s["quantity_available"]))
+            remaining[options[-1]["stock_id"]] = max(remaining.get(options[-1]["stock_id"], 0.0), cap)
 
     return options, remaining
 
@@ -632,7 +640,7 @@ def optimise(demand_df: pd.DataFrame,
         prob.solve(pulp.PULP_CBC_CMD(msg=False))
         status_str = pulp.LpStatus[prob.status]
         if status_str not in ("Optimal", "Feasible"):
-            # Auto-fallback: try greedy using the same options
+            # Auto-fallback: greedy using same options
             rows, total_cost = [], 0.0
             from collections import defaultdict
             remain = defaultdict(float)
@@ -729,8 +737,7 @@ def optimise(demand_df: pd.DataFrame,
 # 3) Run: diagnostics + optimise
 # =========================
 st.subheader("3) Run optimiser")
-relaxed = st.checkbox("Relax official rules if explicit TradingRules exist (debug only)", value=False,
-                      help="If ticked, explicit TradingRules still override; otherwise official rules apply. Use for debugging only.")
+relaxed = st.checkbox("Relax official rules if explicit TradingRules exist (debug only)", value=False)
 st.session_state["relaxed_mode"] = relaxed  # reserved
 
 left, right = st.columns([1,1])
@@ -743,11 +750,11 @@ with right:
     else:
         st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’ for all).")
 
-# --- Deep-dive diagnostics (why it might be infeasible) ---
+# --- Diagnostics ---
 with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False):
     try:
         dd = pd.read_csv(StringIO(demand_csv), header=None, names=["habitat_name","units_required"])
-        dd["habitat_name"] = dd["habitat_name"].astype(str).str.strip().apply(normalise_hab)
+        dd["habitat_name"] = dd["habitat_name"].map(sstr).map(normalise_hab)
         dd["units_required"] = dd["units_required"].astype(float)
 
         present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
@@ -756,7 +763,7 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
         st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes}, total demand: {total_units})")
 
         st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
-        st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  |  **# NCA neighbours:** {len(nca_neighbors)}")
+        st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
 
         st.write("**Demand (after aliases):**")
         st.dataframe(dd, use_container_width=True)
@@ -797,10 +804,25 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
         Stock = backend["Stock"].copy()
         SRM = backend["SRM"].copy()
         Trading = backend.get("TradingRules", pd.DataFrame())
-        srm_map = {r["tier"]: float(r["multiplier"]) for _, r in SRM.iterrows()}
+
+        # clean string columns
+        for df, cols in [
+            (Banks, ["lpa_name","nca_name"]),
+            (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
+            (Stock, ["habitat_name"]),
+            (Pricing, ["habitat_name","contract_size","tier"]),
+            (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
+        ]:
+            if not df.empty:
+                for c in cols:
+                    if c in df.columns:
+                        df[c] = df[c].map(sstr)
+
+        srm_map = {sstr(r["tier"]): float(r["multiplier"]) for _, r in backend["SRM"].iterrows()}
 
         D = backend["DistinctivenessLevels"]
-        dmap = {str(r["distinctiveness_name"]).strip(): float(r["level_value"]) for _, r in D.iterrows()}
+        dmap = {sstr(r["distinctiveness_name"]): float(r["level_value"]) for _, r in D.iterrows()}
+        dmap.update({k.lower(): v for k, v in list(dmap.items())})
 
         stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
                           .merge(Catalog, on="habitat_name", how="left")
@@ -809,23 +831,25 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
         trade_idx = {}
         if not Trading.empty:
             for _, r in Trading.iterrows():
-                trade_idx.setdefault(str(r["demand_habitat"]).strip(), []).append({
-                    "supply_habitat": str(r["allowed_supply_habitat"]).strip(),
-                    "min_distinctiveness_name": str(r.get("min_distinctiveness_name","")).strip() or None,
-                    "companion_habitat": str(r.get("companion_habitat","")).strip() or None,
+                trade_idx.setdefault(sstr(r["demand_habitat"]), []).append({
+                    "supply_habitat": sstr(r["allowed_supply_habitat"]),
+                    "min_distinctiveness_name": sstr(r.get("min_distinctiveness_name")),
+                    "companion_habitat": sstr(r.get("companion_habitat")),
                     "companion_ratio": float(r.get("companion_ratio",0) or 0.0),
                 })
 
-        def dval(x): return dmap.get((x or "").strip(), -1e9)
+        def dval(x): 
+            key = sstr(x)
+            return dmap.get(key, dmap.get(key.lower(), -1e9))
 
         for _, row in dd.iterrows():
-            dem = row["habitat_name"]
+            dem = sstr(row["habitat_name"])
             req = float(row["units_required"])
 
             st.markdown(f"**Demand: {dem} → {req} units**")
             dcat = Catalog[Catalog["habitat_name"] == dem]
-            d_broader = str(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
-            d_dist = str(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
+            d_broader = sstr(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
+            d_dist = sstr(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
             if dcat.empty:
                 st.error("✖ Not in catalog — no distinctiveness/group info. Fix names or aliases.")
                 continue
@@ -857,7 +881,7 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 if d_key == "low":
                     df_s = stock_full.copy()
                 elif d_key == "medium":
-                    same_group = stock_full["broader_type"].fillna("").astype(str).eq(d_broader)
+                    same_group = stock_full["broader_type"].fillna("").astype(str).map(sstr).eq(d_broader)
                     higher_dist = stock_full["distinctiveness_name"].map(dval) > dval(d_dist)
                     df_s = stock_full[same_group | higher_dist].copy()
                 else:
@@ -889,7 +913,7 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 if reasons: st.caption("\n".join(reasons))
                 continue
 
-            rows = []
+            rows2 = []
             removed_no_price = 0
             for _, srow in cand.iterrows():
                 tier = tier_for_bank(srow.get("lpa_name",""), srow.get("nca_name",""),
@@ -900,20 +924,20 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 if pr.empty:
                     removed_no_price += 1
                     continue
-                rows.append({
+                rows2.append({
                     "bank_id": srow["bank_id"],
                     "supply_habitat": srow["habitat_name"],
                     "tier": tier,
                     "unit_price": float(pr["price"].iloc[0]),
                     "srm_mult": float(srm_map.get(tier, 0.5)),
-                    "stock_cap": float(srow["quantity_available"]),
-                    "companion_habitat": srow.get("companion_habitat","") or "",
+                    "stock_cap": float(srow.get("quantity_available",0) or 0.0),
+                    "companion_habitat": sstr(srow.get("companion_habitat")),
                     "companion_ratio": float(srow.get("companion_ratio",0) or 0.0),
                 })
             if removed_no_price:
                 reasons.append(f"- Dropped {removed_no_price} rows with no price for chosen size + tier.")
 
-            cand2 = pd.DataFrame(rows)
+            cand2 = pd.DataFrame(rows2)
             if cand2.empty:
                 st.error("✖ All candidates dropped due to missing prices (contract size/tier).")
                 if reasons: st.caption("\n".join(reasons))
@@ -928,7 +952,6 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 if reasons: st.caption("\n".join(reasons))
                 continue
 
-            # Capacity summary and tier breakdown
             cand2["eff_from_primary"] = cand2["stock_cap"] * cand2["srm_mult"]
             eff_cap = cand2["eff_from_primary"].sum()
 
@@ -959,21 +982,19 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
 if run:
     try:
         demand_df = pd.read_csv(StringIO(demand_csv), header=None, names=["habitat_name","units_required"])
-        demand_df["habitat_name"] = demand_df["habitat_name"].astype(str).str.strip().apply(normalise_hab)
+        demand_df["habitat_name"] = demand_df["habitat_name"].map(sstr).map(normalise_hab)
         demand_df["units_required"] = demand_df["units_required"].astype(float)
 
-        # Guard: demand habitats exist in catalog
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
         unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run]
         if unknown:
             st.error(f"These demand habitats aren’t in the catalog: {unknown}")
             st.stop()
 
-        # Use persisted geography (if not set, optimiser treats all tiers as 'far')
-        target_lpa = target_lpa_name or ""
-        target_nca = target_nca_name or ""
-        lpa_neigh = lpa_neighbors or []
-        nca_neigh = nca_neighbors or []
+        target_lpa = sstr(target_lpa_name)
+        target_nca = sstr(target_nca_name)
+        lpa_neigh = [sstr(n) for n in lpa_neighbors]
+        nca_neigh = [sstr(n) for n in nca_neighbors]
 
         alloc_df, total_cost, size = optimise(
             demand_df,
@@ -1003,7 +1024,6 @@ if run:
         )
         st.dataframe(by_hab, use_container_width=True)
 
-        # Downloads
         def df_to_csv_bytes(df):
             buf = BytesIO()
             buf.write(df.to_csv(index=False).encode("utf-8"))
@@ -1019,6 +1039,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
