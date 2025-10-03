@@ -681,36 +681,59 @@ def prepare_options(demand_df: pd.DataFrame,
             kept_rows.append(opt)
             normal_eff_cap[di] += cap  # each unit = 1 effective (no SRM math)
 
-        # If this is a MEDIUM demand and normal effective capacity < required,
-        # add Orchard+Scrub "paired" options from banks that have BOTH stocks.
+        # ---------- Always offer Orchard+Scrub pairing for MEDIUM,
+        # ---------- UNLESS the site is in/adjacent to any Bank catchment.
         if d_dist.lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
-            if normal_eff_cap[di] + 1e-9 < required:
-                # Build available bank-> (orchard price, orchard stock_id, cap), (scrub price, scrub stock_id, cap)
-                # Use same tier per bank
+            # Check once per prepare_options call whether ANY bank is local/adjacent to the target
+            if "site_has_local_or_adjacent" not in st.session_state:
+                # compute and cache for this run
+                any_local_adj = False
+                for _, b in Banks.iterrows():
+                    t = tier_for_bank(
+                        sstr(b.get("lpa_name")), sstr(b.get("nca_name")),
+                        target_lpa, target_nca,
+                        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+                    )
+                    if t in ("local", "adjacent"):
+                        any_local_adj = True
+                        break
+                st.session_state["site_has_local_or_adjacent"] = any_local_adj
+
+            enable_paired_medium = not st.session_state["site_has_local_or_adjacent"]
+
+            if enable_paired_medium:
+                # Build paired options from banks that have BOTH Orchard and Scrub
                 banks = stock_full["bank_id"].dropna().unique().tolist()
                 for b in banks:
                     orch_rows = stock_full[(stock_full["bank_id"] == b) &
                                            (stock_full["habitat_name"] == ORCHARD_NAME)]
-                    scrub_rows = stock_full[(stock_full["bank_id"] == b) &
-                                            (stock_full["habitat_name"] == SCRUB_NAME)]
-                    if orch_rows.empty or scrub_rows.empty: 
+                    # Accept either explicit "Mixed Scrub" or anything containing "scrub" or "bramble"
+                    scrub_rows = stock_full[(stock_full["bank_id"] == b) & (
+                        (stock_full["habitat_name"] == SCRUB_NAME) |
+                        (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
+                        (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
+                    )]
+                    if orch_rows.empty or scrub_rows.empty:
                         continue
-                    # We’ll allow multiple rows; pick each stock row separately as they have distinct stock_ids
+
                     for _, o in orch_rows.iterrows():
                         for _, s in scrub_rows.iterrows():
-                            # tier and prices
                             tier_b = tier_for_bank(
-                                s.get("lpa_name",""), s.get("nca_name",""),
-                                target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+                                sstr(s.get("lpa_name")), sstr(s.get("nca_name")),
+                                target_lpa, target_nca,
+                                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
                             )
                             pr_o = pricing_cs[(pricing_cs["bank_id"] == b) &
                                               (pricing_cs["habitat_name"] == ORCHARD_NAME) &
                                               (pricing_cs["tier"] == tier_b)]
+                            # price Scrub row by exact name if we have it; otherwise by this s-row's habitat
+                            scrub_name_for_price = SCRUB_NAME if not sstr(SCRUB_NAME) == "" else sstr(s["habitat_name"])
                             pr_s = pricing_cs[(pricing_cs["bank_id"] == b) &
-                                              (pricing_cs["habitat_name"] == SCRUB_NAME) &
+                                              (pricing_cs["habitat_name"] == scrub_name_for_price) &
                                               (pricing_cs["tier"] == tier_b)]
                             if pr_o.empty or pr_s.empty:
                                 continue
+
                             price = 0.5 * float(pr_o["price"].iloc[0]) + 0.5 * float(pr_s["price"].iloc[0])
                             stock_id_o = sstr(o["stock_id"])
                             stock_id_s = sstr(s["stock_id"])
@@ -718,17 +741,18 @@ def prepare_options(demand_df: pd.DataFrame,
                             cap_s = float(s.get("quantity_available", 0) or 0.0)
                             if cap_o <= 0 or cap_s <= 0:
                                 continue
-                            # 1 paired unit consumes 0.5 from each
-                            opt = {
+
+                            options.append({
                                 "type": "paired",
                                 "demand_idx": di,
                                 "demand_habitat": dem_hab,
                                 "bank_id": b,
-                                "supply_habitat": f"{ORCHARD_NAME} + {SCRUB_NAME}",
+                                "supply_habitat": f"{ORCHARD_NAME} + {sstr(s['habitat_name'])}",
                                 "tier": tier_b,
-                                "unit_price": price,
-                                "stock_use": {stock_id_o: 0.5, stock_id_s: 0.5}
-                            }
+                                "unit_price": price,          # 0.5 orchard + 0.5 scrub price
+                                "stock_use": {stock_id_o: 0.5, stock_id_s: 0.5},  # 0.5 + 0.5 per unit
+                            })
+
                             options.append(opt)
 
     return options, stock_caps, stock_bank
