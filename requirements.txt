@@ -1,0 +1,8 @@
+streamlit>=1.37
+pandas>=2.1
+requests>=2.31
+streamlit-folium>=0.18
+folium>=0.16
+openpyxl>=3.1
+xlsxwriter>=3.2
+pulp>=2.7   # optional; app falls back to greedy if not present
