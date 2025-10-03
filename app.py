@@ -958,16 +958,22 @@ with st.expander("🔎 Diagnostics", expanded=False):
                 st.error("No candidate options (check prices/stock/rules).")
             else:
                 cand_df = pd.DataFrame(options_preview)
+                # Rename for display parity with allocation table
+                cand_df = cand_df.rename(columns={"type": "allocation_type"})
                 st.write("**Candidate options (by type & tier):**")
-                st.dataframe(
+                grouped = (
                     cand_df.groupby(["demand_habitat","allocation_type","tier"], as_index=False)
-                           .agg(options=("tier","count"),
-                                min_price=("unit_price","min"),
-                                max_price=("unit_price","max")),
-                    use_container_width=True, hide_index=True
+                           .agg(
+                               options=("tier","count"),
+                               min_price=("unit_price","min"),
+                               max_price=("unit_price","max")
+                           )
+                           .sort_values(["demand_habitat","allocation_type","tier"])
                 )
+                st.dataframe(grouped, use_container_width=True, hide_index=True)
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
+
 
 # ========= Proximity Audit =========
 with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t chosen)", expanded=False):
@@ -1027,6 +1033,46 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
                     st.dataframe(missing_adj[["bank_id","habitat_name","tier"]], use_container_width=True, hide_index=True)
     except Exception as e:
         st.error(f"Audit error: {e}")
+
+with st.expander("💷 Pricing completeness (this contract size)", expanded=False):
+    try:
+        if demand_df.empty:
+            st.info("Add demand rows to see pricing completeness.")
+        else:
+            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+            total_units = float(demand_df["units_required"].sum())
+            chosen_size = select_contract_size(total_units, present_sizes)
+
+            pr = backend["Pricing"].copy()
+            pr = pr[pr["contract_size"] == chosen_size]
+            needed = pd.MultiIndex.from_product(
+                [
+                    backend["Stock"]["bank_id"].dropna().unique(),
+                    demand_df["habitat_name"].unique(),
+                    ["local","adjacent","far"],
+                ],
+                names=["bank_id","habitat_name","tier"]
+            ).to_frame(index=False)
+
+            merged = needed.merge(
+                pr[["bank_id","habitat_name","tier","price"]],
+                on=["bank_id","habitat_name","tier"],
+                how="left",
+                indicator=True
+            )
+
+            missing = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
+            if missing.empty:
+                st.success(f"All tiers priced for size `{chosen_size}` across the demanded habitats.")
+            else:
+                st.warning("Missing pricing rows below mean those options will be skipped.")
+                st.dataframe(
+                    missing.sort_values(["habitat_name","bank_id","tier"]),
+                    use_container_width=True, hide_index=True
+                )
+    except Exception as e:
+        st.error(f"Pricing completeness error: {e}")
+
 
 # --- Run optimiser ---
 if run:
