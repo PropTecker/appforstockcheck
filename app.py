@@ -1,18 +1,19 @@
-# app.py — BNG Optimiser (Standalone, business rules v2)
-# - Login wall (secrets-first fallback to WC0323/Wimbourne)
-# - Dynamic Banks LPA/NCA enrichment (lat/lon -> postcode -> address)
-# - Robust HTTP + POST to avoid 414
-# - Instant map on Locate
-# - Normalised tiering (local/adjacent/far); tier only selects price (no SRM math)
-# - Official trading rules; broadened candidates for Low/Medium
-# - NEW: Prefer 1 bank (≤2 banks max). MILP with bank binaries if PuLP present; greedy fallback otherwise
-# - NEW: Medium shortage → auto "Orchard+Scrub" paired option (0.5+0.5 per unit, price averaged)
-# - Deep diagnostics
+# app.py — BNG Optimiser (Standalone, v3)
+# Key points:
+# - Login (WC0323 / Wimbourne fallback)
+# - Dynamic Bank LPA/NCA enrichment
+# - Robust HTTP + POST (avoids 414)
+# - Locate draws LPA/NCA polygons
+# - Demand builder with autosuggest + "➕ Net Gain (Low-equivalent)"
+# - Official trading rules (Low/Medium/High+); no SRM math (already priced in)
+# - Prefer 1 bank (≤2 max). MILP with bank binaries if PuLP; greedy fallback otherwise
+# - Medium fallback: Orchard + Scrub pair (0.5+0.5 from same bank) only when site is not local/adjacent to any bank; deprioritized vs direct Medium swaps
+# - Post-optimisation map overlay: chosen bank markers + target→bank lines
 
 import json
 import re
 import time
-from io import StringIO, BytesIO
+from io import BytesIO
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 
@@ -75,7 +76,6 @@ require_login()
 # ========= Endpoints =========
 UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}  # set a real contact email
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
-POSTCODES_IO_REVERSE = "https://api.postcodes.io/postcodes"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
 NCA_URL = ("https://services.arcgis.com/JJzESW51TqeY9uat/arcgis/rest/services/"
            "National_Character_Areas_England/FeatureServer/0")
@@ -426,18 +426,23 @@ if run_locate:
     except Exception as e:
         st.error(f"Location error: {e}")
 
-# Map
-if (target_lat is not None) and (target_lon is not None):
+# Map (base layers)
+def render_base_map():
     fmap = folium.Map(location=[target_lat, target_lon], zoom_start=11, control_scale=True)
     add_geojson_layer(fmap, lpa_geojson, f"LPA: {target_lpa_name}" if target_lpa_name else "LPA", color="red", weight=2, fill_opacity=0.05)
     add_geojson_layer(fmap, nca_geojson, f"NCA: {target_nca_name}" if target_nca_name else "NCA", color="yellow", weight=3, fill_opacity=0.05)
-    folium.CircleMarker([target_lat, target_lon], radius=5, color="red", fill=True, tooltip="Target").add_to(fmap)
+    folium.CircleMarker([target_lat, target_lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
+    return fmap
+
+if (target_lat is not None) and (target_lon is not None):
     st.markdown("### Map")
-    st_folium(fmap, height=420, returned_objects=[], use_container_width=True)
+    st_folium(render_base_map(), height=420, returned_objects=[], use_container_width=True)
 
 # ========= Demand builder =========
 st.subheader("2) Demand (units required)")
+
+NET_GAIN_LABEL = "Net Gain (Low-equivalent)"    # special demand that trades like Low
 
 def init_demand_state():
     if "demand_rows" not in st.session_state:
@@ -446,8 +451,9 @@ def init_demand_state():
 
 init_demand_state()
 
+# choices from catalog plus the special Net Gain label
 HAB_CHOICES = sorted(
-    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()]
+    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
 )
 
 with st.container(border=True):
@@ -471,7 +477,7 @@ with st.container(border=True):
                 to_delete.append(row["id"])
     if to_delete:
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
-    cc1, cc2, cc3 = st.columns([0.4, 0.35, 0.25])
+    cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
     with cc1:
         if st.button("➕ Add habitat"):
             st.session_state.demand_rows.append(
@@ -479,11 +485,17 @@ with st.container(border=True):
             )
             st.session_state._next_row_id += 1
     with cc2:
+        if st.button("➕ Net Gain (Low-equivalent)", help="Adds a 'Net Gain' line you can type units into. Trades like Low distinctiveness (can source from any habitat)."):
+            st.session_state.demand_rows.append(
+                {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
+            )
+            st.session_state._next_row_id += 1
+    with cc3:
         if st.button("🧹 Clear all"):
             init_demand_state(); st.rerun()
-    with cc3:
-        total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
-        st.metric("Total units", f"{total_units:.2f}")
+
+total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
+st.metric("Total units", f"{total_units:.2f}")
 
 demand_df = pd.DataFrame(
     [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
@@ -500,6 +512,8 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
     if explicit_rule:  # TradingRules override
         return True
     dh = sstr(demand_row.get("habitat_name"))
+    if dh == NET_GAIN_LABEL:
+        return True  # Net Gain behaves like Low (anything)
     sh = sstr(supply_row.get("habitat_name"))
     d_group = sstr(demand_row.get("broader_type"))
     s_group = sstr(supply_row.get("broader_type"))
@@ -532,107 +546,112 @@ def prepare_options(demand_df: pd.DataFrame,
                     target_lpa: str, target_nca: str,
                     lpa_neigh: List[str], nca_neigh: List[str],
                     lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[List[dict], Dict[str, float], Dict[str, str]]:
-    """Build options. Each option carries:
-       - demand_idx, demand_habitat, bank_id, supply_habitat, tier, unit_price
-       - stock_use: {stock_id: coefficient per 1 unit allocated}  (normal=1.0; paired=0.5 on two stocks)
-       Returns: (options, stock_caps, stock_bank_map)
-    """
     Banks = backend["Banks"].copy()
     Pricing = backend["Pricing"].copy()
     Catalog = backend["HabitatCatalog"].copy()
     Stock = backend["Stock"].copy()
-    SRM = backend["SRM"].copy()  # still used to know tier names if needed
     Trading = backend.get("TradingRules", pd.DataFrame())
 
-    # Clean string columns
     for df, cols in [
-        (Banks, ["lpa_name","nca_name"]),
+        (Banks, ["lpa_name","nca_name","lat","lon","postcode","address","bank_id"]),
         (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
-        (Stock, ["habitat_name","stock_id"]),
-        (Pricing, ["habitat_name","contract_size","tier"]),
+        (Stock, ["habitat_name","stock_id","bank_id"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id"]),
         (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
     ]:
         if not df.empty:
             for c in cols:
-                if c in df.columns: df[c] = df[c].map(sstr)
+                if c in df.columns:
+                    df[c] = df[c].map(sstr)
 
-    # Merge stock context
     stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
                       .merge(Catalog, on="habitat_name", how="left")
 
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
 
-    # Trading index
+    # Trading index (still supported; companions ignored here)
     trade_idx = {}
     if not Trading.empty:
         for _, r in Trading.iterrows():
             trade_idx.setdefault(sstr(r["demand_habitat"]), []).append({
                 "supply_habitat": sstr(r["allowed_supply_habitat"]),
                 "min_distinctiveness_name": sstr(r.get("min_distinctiveness_name")),
-                "companion_habitat": sstr(r.get("companion_habitat")),
-                "companion_ratio": float(r.get("companion_ratio", 0) or 0.0),
             })
 
-    # Find catalog names for pairing (Traditional Orchard and Mixed Scrub)
+    # helper to find names for pairing
     def find_catalog_name(substr: str) -> Optional[str]:
         m = Catalog[Catalog["habitat_name"].str.contains(substr, case=False, na=False)]
         return sstr(m["habitat_name"].iloc[0]) if not m.empty else None
 
     ORCHARD_NAME = find_catalog_name("Traditional Orchard")
-    SCRUB_NAME   = find_catalog_name("Mixed Scrub")
+    SCRUB_NAME = find_catalog_name("Mixed Scrub")
+    if not SCRUB_NAME:
+        SCRUB_NAME = find_catalog_name("scrub")
+    if not SCRUB_NAME:
+        SCRUB_NAME = find_catalog_name("bramble")
+
+    # Determine once per site: any local/adjacent bank?
+    _adj_key = f"adj_flag::{norm_name(target_lpa)}::{norm_name(target_nca)}"
+    if _adj_key not in st.session_state:
+        any_local_adj = False
+        for _, b in Banks.iterrows():
+            t = tier_for_bank(
+                sstr(b.get("lpa_name")), sstr(b.get("nca_name")),
+                target_lpa, target_nca,
+                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+            )
+            if t in ("local", "adjacent"):
+                any_local_adj = True
+                break
+        st.session_state[_adj_key] = any_local_adj
+    site_has_local_adjacent = st.session_state[_adj_key]
+
+    options: List[dict] = []
+    stock_caps: Dict[str, float] = {}
+    stock_bank: Dict[str, str] = {}
+    for _, s in Stock.iterrows():
+        stock_caps[sstr(s["stock_id"])] = float(s.get("quantity_available", 0) or 0.0)
+        stock_bank[sstr(s["stock_id"])] = sstr(s["bank_id"])
 
     def dval(name: Optional[str]) -> float:
         key = sstr(name)
         return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
 
-    # Build normal options first
-    options: List[dict] = []
-    stock_caps: Dict[str, float] = {}
-    stock_bank: Dict[str, str] = {}  # stock_id -> bank_id
-
-    # record caps
-    for _, s in Stock.iterrows():
-        stock_caps[sstr(s["stock_id"])] = float(s.get("quantity_available", 0) or 0.0)
-        stock_bank[sstr(s["stock_id"])] = sstr(s["bank_id"])
-
-    # Precompute normal effective capacity per demand to know if we need pairing for "medium"
-    normal_eff_cap: Dict[int, float] = {i: 0.0 for i in demand_df.index}
-
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
         required = float(drow["units_required"])
-        dcat = Catalog[Catalog["habitat_name"] == dem_hab]
-        d_broader = sstr(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
-        d_dist = sstr(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
-        drow = drow.copy()
-        drow["broader_type"] = d_broader
-        drow["distinctiveness_name"] = d_dist
 
+        # Special Net Gain behaves exactly like Low distinctiveness
+        if dem_hab == NET_GAIN_LABEL:
+            d_broader = ""
+            d_dist = "Low"
+        else:
+            dcat = Catalog[Catalog["habitat_name"] == dem_hab]
+            d_broader = sstr(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
+            d_dist = sstr(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
+
+        # Candidates
         cand_parts = []
 
-        # Explicit rules (always allowed)
+        # Explicit trading rule rows (if any)
         for rule in trade_idx.get(dem_hab, []):
             sh = rule["supply_habitat"]; s_min = rule["min_distinctiveness_name"]
             df_s = stock_full[stock_full["habitat_name"] == sh].copy()
             if s_min:
                 df_s = df_s[df_s["distinctiveness_name"].map(lambda x: dval(x)) >= dval(s_min)]
-            # Companion rules are handled in legacy path; we avoid companions now (pairing is explicit below)
-            df_s["companion_habitat"] = ""
-            df_s["companion_ratio"] = 0.0
             if not df_s.empty: cand_parts.append(df_s)
 
-        # Implicit (official) when no explicit
+        # Implicit official rules (or NET_GAIN_LABEL)
         if not cand_parts:
-            d_key = d_dist.lower()
-            if d_key == "low":
+            key = d_dist.lower()
+            if key == "low" or dem_hab == NET_GAIN_LABEL:
                 df_s = stock_full.copy()
-            elif d_key == "medium":
+            elif key == "medium":
                 same_group = stock_full["broader_type"].fillna("").astype(str).map(sstr).eq(d_broader)
                 higher_dist = stock_full["distinctiveness_name"].map(lambda x: dval(x)) > dval(d_dist)
                 df_s = stock_full[same_group | higher_dist].copy()
             else:
                 df_s = stock_full[stock_full["habitat_name"] == dem_hab].copy()
-            df_s["companion_habitat"] = ""; df_s["companion_ratio"] = 0.0
             if not df_s.empty: cand_parts.append(df_s)
 
         if not cand_parts:
@@ -640,10 +659,10 @@ def prepare_options(demand_df: pd.DataFrame,
 
         candidates = pd.concat(cand_parts, ignore_index=True)
 
-        kept_rows = []
+        # Normal (direct) options
         for _, s in candidates.iterrows():
-            # Official rule check (unless explicit TradingRules – we already neutralised companions)
             explicit = (dem_hab in trade_idx)
+            # respect official rules unless explicit
             if not enforce_catalog_rules_official(
                 pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
                 s, dist_levels_map, explicit_rule=explicit
@@ -652,108 +671,70 @@ def prepare_options(demand_df: pd.DataFrame,
             tier = tier_for_bank(
                 s.get("lpa_name",""), s.get("nca_name",""),
                 target_lpa, target_nca,
-                lpa_neigh, nca_neigh,
-                lpa_neigh_norm, nca_neigh_norm
+                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
             )
-            price_row = pricing_cs[
-                (pricing_cs["bank_id"] == s["bank_id"]) &
-                (pricing_cs["habitat_name"] == s["habitat_name"]) &
-                (pricing_cs["tier"] == tier)
-            ]
-            if price_row.empty:
+            pr = pricing_cs[(pricing_cs["bank_id"] == s["bank_id"]) &
+                            (pricing_cs["habitat_name"] == s["habitat_name"]) &
+                            (pricing_cs["tier"] == tier)]
+            if pr.empty:
                 continue
-            unit_price = float(price_row["price"].iloc[0])
-            stock_id = sstr(s["stock_id"])
             cap = float(s.get("quantity_available", 0) or 0.0)
-            if cap <= 0: 
+            if cap <= 0:
                 continue
-            opt = {
+            options.append({
                 "type": "normal",
                 "demand_idx": di,
                 "demand_habitat": dem_hab,
                 "bank_id": s["bank_id"],
                 "supply_habitat": s["habitat_name"],
                 "tier": tier,
-                "unit_price": unit_price,
-                "stock_use": {stock_id: 1.0},   # 1 unit consumes 1 from this stock
-            }
-            options.append(opt)
-            kept_rows.append(opt)
-            normal_eff_cap[di] += cap  # each unit = 1 effective (no SRM math)
+                "unit_price": float(pr["price"].iloc[0]),
+                "stock_use": {sstr(s["stock_id"]): 1.0},
+            })
 
-        # ---------- Always offer Orchard+Scrub pairing for MEDIUM,
-        # ---------- UNLESS the site is in/adjacent to any Bank catchment.
-        if d_dist.lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
-            # Check once per prepare_options call whether ANY bank is local/adjacent to the target
-            if "site_has_local_or_adjacent" not in st.session_state:
-                # compute and cache for this run
-                any_local_adj = False
-                for _, b in Banks.iterrows():
-                    t = tier_for_bank(
-                        sstr(b.get("lpa_name")), sstr(b.get("nca_name")),
-                        target_lpa, target_nca,
-                        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
-                    )
-                    if t in ("local", "adjacent"):
-                        any_local_adj = True
-                        break
-                st.session_state["site_has_local_or_adjacent"] = any_local_adj
-
-            enable_paired_medium = not st.session_state["site_has_local_or_adjacent"]
-
-            if enable_paired_medium:
-                # Build paired options from banks that have BOTH Orchard and Scrub
-                banks = stock_full["bank_id"].dropna().unique().tolist()
-                for b in banks:
-                    orch_rows = stock_full[(stock_full["bank_id"] == b) &
-                                           (stock_full["habitat_name"] == ORCHARD_NAME)]
-                    # Accept either explicit "Mixed Scrub" or anything containing "scrub" or "bramble"
-                    scrub_rows = stock_full[(stock_full["bank_id"] == b) & (
-                        (stock_full["habitat_name"] == SCRUB_NAME) |
-                        (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
-                        (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
-                    )]
-                    if orch_rows.empty or scrub_rows.empty:
-                        continue
-
-                    for _, o in orch_rows.iterrows():
-                        for _, s in scrub_rows.iterrows():
-                            tier_b = tier_for_bank(
-                                sstr(s.get("lpa_name")), sstr(s.get("nca_name")),
-                                target_lpa, target_nca,
-                                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
-                            )
-                            pr_o = pricing_cs[(pricing_cs["bank_id"] == b) &
-                                              (pricing_cs["habitat_name"] == ORCHARD_NAME) &
-                                              (pricing_cs["tier"] == tier_b)]
-                            # price Scrub row by exact name if we have it; otherwise by this s-row's habitat
-                            scrub_name_for_price = SCRUB_NAME if not sstr(SCRUB_NAME) == "" else sstr(s["habitat_name"])
-                            pr_s = pricing_cs[(pricing_cs["bank_id"] == b) &
-                                              (pricing_cs["habitat_name"] == scrub_name_for_price) &
-                                              (pricing_cs["tier"] == tier_b)]
-                            if pr_o.empty or pr_s.empty:
-                                continue
-
-                            price = 0.5 * float(pr_o["price"].iloc[0]) + 0.5 * float(pr_s["price"].iloc[0])
-                            stock_id_o = sstr(o["stock_id"])
-                            stock_id_s = sstr(s["stock_id"])
-                            cap_o = float(o.get("quantity_available", 0) or 0.0)
-                            cap_s = float(s.get("quantity_available", 0) or 0.0)
-                            if cap_o <= 0 or cap_s <= 0:
-                                continue
-
-                            options.append({
-                                "type": "paired",
-                                "demand_idx": di,
-                                "demand_habitat": dem_hab,
-                                "bank_id": b,
-                                "supply_habitat": f"{ORCHARD_NAME} + {sstr(s['habitat_name'])}",
-                                "tier": tier_b,
-                                "unit_price": price,          # 0.5 orchard + 0.5 scrub price
-                                "stock_use": {stock_id_o: 0.5, stock_id_s: 0.5},  # 0.5 + 0.5 per unit
-                            })
-
-                            options.append(opt)
+        # Medium fallback: paired Orchard + Scrub only when site is far from all banks
+        if d_dist.lower() == "medium" and not site_has_local_adjacent and ORCHARD_NAME and SCRUB_NAME:
+            banks = stock_full["bank_id"].dropna().unique().tolist()
+            for b in banks:
+                orch_rows = stock_full[(stock_full["bank_id"] == b) &
+                                       (stock_full["habitat_name"] == ORCHARD_NAME)]
+                scrub_rows = stock_full[(stock_full["bank_id"] == b) & (
+                    (stock_full["habitat_name"] == SCRUB_NAME) |
+                    (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
+                    (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
+                )]
+                if orch_rows.empty or scrub_rows.empty:
+                    continue
+                for _, o in orch_rows.iterrows():
+                    for _, s in scrub_rows.iterrows():
+                        tier_b = tier_for_bank(
+                            sstr(s.get("lpa_name")), sstr(s.get("nca_name")),
+                            target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+                        )
+                        pr_o = pricing_cs[(pricing_cs["bank_id"] == b) &
+                                          (pricing_cs["habitat_name"] == ORCHARD_NAME) &
+                                          (pricing_cs["tier"] == tier_b)]
+                        scrub_price_name = sstr(s["habitat_name"])  # price by exact scrub variant
+                        pr_s = pricing_cs[(pricing_cs["bank_id"] == b) &
+                                          (pricing_cs["habitat_name"] == scrub_price_name) &
+                                          (pricing_cs["tier"] == tier_b)]
+                        if pr_o.empty or pr_s.empty:
+                            continue
+                        cap_o = float(o.get("quantity_available", 0) or 0.0)
+                        cap_s = float(s.get("quantity_available", 0) or 0.0)
+                        if cap_o <= 0 or cap_s <= 0:
+                            continue
+                        price = 0.5 * float(pr_o["price"].iloc[0]) + 0.5 * float(pr_s["price"].iloc[0])
+                        options.append({
+                            "type": "paired",
+                            "demand_idx": di,
+                            "demand_habitat": dem_hab,
+                            "bank_id": b,
+                            "supply_habitat": f"{ORCHARD_NAME} + {sstr(s['habitat_name'])}",
+                            "tier": tier_b,
+                            "unit_price": price,
+                            "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s["stock_id"]): 0.5},
+                        })
 
     return options, stock_caps, stock_bank
 
@@ -770,28 +751,27 @@ def optimise(demand_df: pd.DataFrame,
     if not options:
         raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
 
-    # Map useful sets
+    # index options by demand
     idx_by_dem: Dict[int, List[int]] = {}
     for i, opt in enumerate(options):
         idx_by_dem.setdefault(opt["demand_idx"], []).append(i)
 
-    # MILP with bank binaries when PuLP present
+    # ---- MILP (prefer 1 bank; ≤2 max); prefer direct swaps over paired on ties
     if _HAS_PULP:
         def solve_with_bank_limit(max_banks: int) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
             prob = pulp.LpProblem("BNG_Allocation_MILP", pulp.LpMinimize)
             x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
-
-            # Bank binaries
             banks = sorted({opt["bank_id"] for opt in options})
             y = {b: pulp.LpVariable(f"y_{b}", lowBound=0, upBound=1, cat="Binary") for b in banks}
 
-            # Objective: cost + tiny penalty for number of banks
-            eps = 1e-4
-            prob += pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))]) + \
-                    eps * pulp.lpSum([y[b] for b in banks])
+            # objective
+            eps_bank, eps_paired = 1e-4, 1e-6
+            cost_term = pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))])
+            bank_pen  = eps_bank * pulp.lpSum([y[b] for b in banks])
+            pair_pen  = eps_paired * pulp.lpSum([x[i] for i in range(len(options)) if options[i]["type"] == "paired"])
+            prob += cost_term + bank_pen + pair_pen
 
-            # Link each option to its bank usage
-            # Big-M per bank: sum of all stock caps of that bank
+            # link x to bank y with big-M
             M_bank: Dict[str, float] = {b: 0.0 for b in banks}
             for sid, cap in stock_caps.items():
                 b = stock_bank.get(sid, "")
@@ -800,23 +780,21 @@ def optimise(demand_df: pd.DataFrame,
             for i, opt in enumerate(options):
                 prob += x[i] <= M_bank[opt["bank_id"]] * y[opt["bank_id"]], f"link_{i}"
 
-            # Bank limit
+            # bank limit
             prob += pulp.lpSum([y[b] for b in banks]) <= max_banks, "bank_limit"
 
-            # Demand constraints: each demand needs its required units
+            # demand constraints
             for di, drow in demand_df.iterrows():
                 prob += pulp.lpSum([x[i] for i in idx_by_dem.get(di, [])]) >= float(drow["units_required"]), f"demand_{di}"
 
-            # Stock caps: sum of option consumptions ≤ cap per stock
-            # each option has stock_use mapping
-            # Build stock -> list of (i, coef)
+            # stock caps
             use_map: Dict[str, List[Tuple[int,float]]] = {}
             for i, opt in enumerate(options):
                 for sid, coef in opt["stock_use"].items():
                     use_map.setdefault(sid, []).append((i, float(coef)))
             for sid, pairs in use_map.items():
                 cap = float(stock_caps.get(sid, 0.0))
-                if cap <= 0: 
+                if cap <= 0:
                     continue
                 prob += pulp.lpSum([coef * x[i] for (i, coef) in pairs]) <= cap, f"cap_{sid}"
 
@@ -836,71 +814,56 @@ def optimise(demand_df: pd.DataFrame,
                     "supply_habitat": opt["supply_habitat"],
                     "allocation_type": opt["type"],
                     "tier": opt["tier"],
-                    "units_supplied": qty,              # effective units = qty (no SRM math)
+                    "units_supplied": qty,
                     "unit_price": opt["unit_price"],
                     "cost": qty * opt["unit_price"],
                 })
                 total_cost += qty * opt["unit_price"]
             return (pd.DataFrame(rows), float(total_cost))
 
-        # Try ≤1 bank, else ≤2
-        res = solve_with_bank_limit(1)
-        
         def _is_bad(solution_tuple):
             df, cost = solution_tuple
-            # infeasible returns (None, None)
-            if df is None:
-                return True
-            # if solver returned an empty allocation table, treat as infeasible too
-            if isinstance(df, pd.DataFrame) and df.empty:
-                return True
+            if df is None: return True
+            if isinstance(df, pd.DataFrame) and df.empty: return True
             return False
-        
+
+        res = solve_with_bank_limit(1)
         if _is_bad(res):
             res = solve_with_bank_limit(2)
             if _is_bad(res):
                 raise RuntimeError("Infeasible even with two banks.")
-        
         alloc_df, total_cost = res
         return alloc_df, total_cost, chosen_size
 
-
-    # -------- Greedy fallback (no PuLP): prefer 1 bank, else best 2 banks --------
-    # Score banks by cheapest average unit price across all options
+    # ---- Greedy fallback (prefer 1 bank; else best 2). Paired deprioritised on ties
     from collections import defaultdict
 
-    # Group options by bank and demand
-    opts_by_bank: Dict[str, List[int]] = defaultdict(list)
+    options_by_bank: Dict[str, List[int]] = defaultdict(list)
     for i, opt in enumerate(options):
-        opts_by_bank[opt["bank_id"]].append(i)
+        options_by_bank[opt["bank_id"]].append(i)
 
-    # Helper to try a fixed bank set
     def greedy_for_banks(allowed_banks: List[str]) -> Tuple[bool, pd.DataFrame, float]:
-        # Available caps per stock
         caps = stock_caps.copy()
-        rows, total = [], 0.0
+        rows = []
 
         for di, drow in demand_df.iterrows():
             need = float(drow["units_required"])
-            # candidate i where bank in allowed_banks
             cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di and opt["bank_id"] in allowed_banks]
-            # sort by unit price asc
-            cand.sort(key=lambda i: options[i]["unit_price"])
+            # sort by (price, paired_flag) to prefer direct on ties
+            cand.sort(key=lambda i: (options[i]["unit_price"], 1 if options[i]["type"] == "paired" else 0))
             for i in cand:
                 if need <= 1e-9: break
                 opt = options[i]
-                # compute max we can take limited by all involved stocks
+                # max take limited by all stocks in this option
                 max_take = float('inf')
                 for sid, coef in opt["stock_use"].items():
                     if coef <= 0: continue
                     max_take = min(max_take, caps.get(sid, 0.0) / coef if coef > 0 else float('inf'))
                 if max_take <= 1e-9: 
                     continue
-                take = min(max_take, need)  # 1 unit allocated contributes 1 effective unit
-                # decrement caps
+                take = min(max_take, need)
                 for sid, coef in opt["stock_use"].items():
                     caps[sid] = caps.get(sid, 0.0) - coef * take
-                cost = take * opt["unit_price"]
                 rows.append({
                     "demand_habitat": opt["demand_habitat"],
                     "bank_id": opt["bank_id"],
@@ -909,33 +872,34 @@ def optimise(demand_df: pd.DataFrame,
                     "tier": opt["tier"],
                     "units_supplied": take,
                     "unit_price": opt["unit_price"],
-                    "cost": cost
+                    "cost": take * opt["unit_price"],
                 })
                 need -= take
             if need > 1e-6:
                 return False, pd.DataFrame(), 0.0
-        return True, pd.DataFrame(rows), float(sum(r["cost"] for r in rows))
+        df = pd.DataFrame(rows)
+        return True, df, float(df["cost"].sum()) if not df.empty else 0.0
 
-    # Rank banks by average cheapest option price
+    # rank banks by average cheapest option
     bank_prices = []
-    for b, idxs in opts_by_bank.items():
+    for b, idxs in options_by_bank.items():
         if not idxs: continue
-        bank_prices.append((b, np.mean([options[i]["unit_price"] for i in idxs])))
+        bank_prices.append((b, float(np.mean([options[i]["unit_price"] for i in idxs]))))
     bank_prices.sort(key=lambda x: x[1])
-    bank_order = [b for b, _ in bank_prices]
+    order = [b for b, _ in bank_prices]
 
-    # Try single banks
-    for b in bank_order:
+    # try 1 bank
+    for b in order:
         ok, df, cost = greedy_for_banks([b])
         if ok:
             return df, cost, chosen_size
 
-    # Try best pairs
-    n = len(bank_order)
+    # try best pairs
+    n = len(order)
     best_df, best_cost = None, float("inf")
     for i in range(n):
         for j in range(i+1, n):
-            ok, df, cost = greedy_for_banks([bank_order[i], bank_order[j]])
+            ok, df, cost = greedy_for_banks([order[i], order[j]])
             if ok and cost < best_cost:
                 best_df, best_cost = df, cost
     if best_df is None:
@@ -954,7 +918,7 @@ with right:
     else:
         st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’).")
 
-# ========= Diagnostics =========
+# ========= Diagnostics (short) =========
 with st.expander("🔎 Diagnostics", expanded=False):
     try:
         if demand_df.empty:
@@ -968,7 +932,7 @@ with st.expander("🔎 Diagnostics", expanded=False):
             st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
             st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
 
-            options_preview, stock_caps_preview, _ = prepare_options(
+            options_preview, _, _ = prepare_options(
                 dd, chosen_size,
                 sstr(target_lpa_name), sstr(target_nca_name),
                 [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
@@ -978,7 +942,6 @@ with st.expander("🔎 Diagnostics", expanded=False):
                 st.error("No candidate options (check prices/stock/rules).")
             else:
                 cand_df = pd.DataFrame(options_preview)
-                # Summaries
                 st.write("**Candidate options (by type & tier):**")
                 st.dataframe(
                     cand_df.groupby(["demand_habitat","allocation_type","tier"], as_index=False)
@@ -997,9 +960,9 @@ if run:
             st.error("Add at least one demand row before optimising.")
             st.stop()
 
-        # Validate against catalog names (selectbox ensures canonical)
+        # Validate against catalog—but allow the special Net Gain label
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run]
+        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h != NET_GAIN_LABEL]
         if unknown:
             st.error(f"These demand habitats aren’t in the catalog: {unknown}")
             st.stop()
@@ -1033,6 +996,56 @@ if run:
         )
         st.dataframe(by_hab, use_container_width=True)
 
+        # ------- Map overlay: chosen banks and links -------
+        if (target_lat is not None) and (target_lon is not None):
+            fmap = render_base_map()
+
+            # Build bank→(lat,lon) using Banks lat/lon or geocode
+            bank_coords: Dict[str, Tuple[float,float]] = {}
+            banks_df = backend["Banks"].copy()
+
+            for _, b in banks_df.iterrows():
+                bid = sstr(b.get("bank_id"))
+                loc = bank_row_to_latlon(b)
+                if loc:
+                    bank_coords[bid] = (loc[0], loc[1])
+
+            # Summaries per bank for popup
+            if not alloc_df.empty:
+                grouped = alloc_df.groupby("bank_id")
+                for bank_id, g in grouped:
+                    latlon = bank_coords.get(bank_id)
+                    if not latlon:
+                        continue
+                    lat_b, lon_b = latlon
+                    popup_lines = []
+                    total_units = g["units_supplied"].sum()
+                    total_cost = g["cost"].sum()
+                    popup_lines.append(f"<b>Bank:</b> {bank_id}")
+                    popup_lines.append(f"<b>Total units:</b> {total_units:.3f}")
+                    popup_lines.append(f"<b>Total cost:</b> £{total_cost:,.0f}")
+                    popup_lines.append("<b>Breakdown:</b>")
+                    # top 6 rows
+                    for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
+                        popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
+
+                    folium.Marker(
+                        [lat_b, lon_b],
+                        icon=folium.Icon(color="green", icon="leaf"),
+                        popup=folium.Popup("<br>".join(popup_lines), max_width=420)
+                    ).add_to(fmap)
+
+                    # dashed line target -> bank
+                    folium.PolyLine(
+                        locations=[[target_lat, target_lon], [lat_b, lon_b]],
+                        weight=2, opacity=0.8, dash_array="6,6", color="blue",
+                        tooltip=f"Supply route: target → {bank_id}"
+                    ).add_to(fmap)
+
+            st.markdown("### Map (with selected supply)")
+            st_folium(fmap, height=520, returned_objects=[], use_container_width=True)
+
+        # downloads
         def df_to_csv_bytes(df):
             buf = BytesIO()
             buf.write(df.to_csv(index=False).encode("utf-8"))
