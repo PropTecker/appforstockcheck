@@ -1,7 +1,6 @@
-# app.py — BNG Optimiser (Standalone) with login + hardened requests
+# app.py — BNG Optimiser (Standalone) with login, POST fix, aliases & diagnostics
 
 import json
-import math
 from io import StringIO, BytesIO
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
@@ -30,7 +29,6 @@ def require_login():
         st.session_state.auth_ok = False
 
     if st.session_state.auth_ok:
-        # optional logout
         with st.sidebar:
             if st.button("Log out"):
                 st.session_state.auth_ok = False
@@ -60,7 +58,6 @@ require_login()
 # Constants & endpoints
 # =========================
 UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}  # set a real contact email
-
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 POSTCODES_IO_REVERSE = "https://api.postcodes.io/postcodes"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
@@ -93,6 +90,14 @@ def http_get(url, params=None, headers=None, timeout=25):
     except Exception as e:
         raise RuntimeError(f"HTTP error for {url}: {e}")
 
+def http_post(url, data=None, headers=None, timeout=25):
+    try:
+        r = requests.post(url, data=data or {}, headers=headers or UA, timeout=timeout)
+        r.raise_for_status()
+        return r
+    except Exception as e:
+        raise RuntimeError(f"HTTP POST error for {url}: {e}")
+
 def safe_json(r: requests.Response) -> Dict[str, Any]:
     try:
         return r.json()
@@ -102,15 +107,6 @@ def safe_json(r: requests.Response) -> Dict[str, Any]:
             f"Invalid JSON from {r.url} (status {r.status_code}). "
             f"Response starts with: {text_preview}"
         )
-
-def http_post(url, data=None, headers=None, timeout=25):
-    try:
-        r = requests.post(url, data=data or {}, headers=headers or UA, timeout=timeout)
-        r.raise_for_status()
-        return r
-    except Exception as e:
-        raise RuntimeError(f"HTTP POST error for {url}: {e}")
-
 
 # =========================
 # Geocoding / lookups
@@ -166,38 +162,28 @@ def arcgis_point_query(layer_url: str, lat: float, lon: float, out_fields: str) 
 
 def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_field: str) -> List[str]:
     """
-    Query ArcGIS with POST to avoid 414 (URI Too Large) when sending polygon geometries.
-    We also use geometryPrecision to reduce payload size. Returns all features that INTERSECT
-    the given polygon (this includes the polygon itself; we filter the caller’s own name later).
+    Query ArcGIS with POST to avoid 414 (URI Too Large) for complex polygons.
+    geometryPrecision trims decimals to reduce payload size.
     """
     if not polygon_geom:
         return []
-
-    # ArcGIS accepts either rings (polygon) or an envelope. We keep the polygon for correctness,
-    # but reduce coordinate precision to shrink payload size.
     data = {
         "f": "json",
         "where": "1=1",
-        "geometry": json.dumps(polygon_geom),           # full polygon, but…
+        "geometry": json.dumps(polygon_geom),
         "geometryType": "esriGeometryPolygon",
         "inSR": 4326,
         "spatialRel": "esriSpatialRelIntersects",
         "outFields": name_field,
         "returnGeometry": "false",
         "outSR": 4326,
-
-        # Light server-side simplification: trims coordinate precision to reduce bytes.
-        # (This does NOT generalize topology; it just shortens numbers.)
-        "geometryPrecision": 5,   # ~1e-5 deg ≈ 1 m-ish
-        # Optional generalization for very complex polygons:
-        # "maxAllowableOffset": 0.0001,  # ~11 m in WGS84 (tune if needed)
+        "geometryPrecision": 5,   # trims coord decimals
+        # "maxAllowableOffset": 0.0001,   # optional generalization if ever needed
     }
-
     r = http_post(f"{layer_url}/query", data=data)
     js = safe_json(r)
     names = [ (f.get("attributes") or {}).get(name_field) for f in js.get("features", []) ]
     return sorted({n for n in names if n})
-
 
 def tier_for_bank(bank_lpa: str, bank_nca: str, t_lpa: str, t_nca: str, lpa_neigh: List[str], nca_neigh: List[str]) -> str:
     if bank_lpa == t_lpa or bank_nca == t_nca:
@@ -213,7 +199,7 @@ def select_contract_size(total_units: float, present: List[str]) -> str:
     if "medium" in tiers and total_units < 15: return "medium"
     for t in ["large", "medium", "small", "fractional"]:
         if t in tiers: return t
-    return present[0]
+    return present[0] if present else "small"
 
 # =========================
 # Sidebar: Backend + policy
@@ -256,7 +242,7 @@ if backend is None:
     st.warning("Upload your backend workbook to continue.", icon="⚠️")
     st.stop()
 
-# Apply quotes policy if WITH_STOCK fields exist
+# Apply quotes policy if WITH_STOCK columns exist
 if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["Stock"].columns:
     s = backend["Stock"].copy()
     if quotes_hold_policy == "Ignore quotes (default)":
@@ -319,7 +305,7 @@ if run_locate:
         target_nca_name = (nca_feat.get("attributes") or {}).get("NCA_Name", "")
         st.success(f"Found LPA: **{target_lpa_name}** | NCA: **{target_nca_name}**")
 
-        # Neighbours
+        # Neighbours via POST to avoid 414
         lpa_neighbors = [n for n in layer_intersect_names(LPA_URL, lpa_feat.get("geometry"), "LAD24NM") if n != target_lpa_name]
         nca_neighbors = [n for n in layer_intersect_names(NCA_URL, nca_feat.get("geometry"), "NCA_Name") if n != target_nca_name]
 
@@ -332,14 +318,29 @@ if run_locate:
         st.error(f"Location error: {e}")
 
 # =========================
-# Demand input
+# Demand input (+ aliasing)
 # =========================
 st.subheader("2) Demand (units required)")
 default_demand = "Individual trees - Urban tree,8\nGrassland - Other neutral grassland,30"
 demand_csv = st.text_area("CSV: habitat_name,units_required", value=default_demand, height=120)
 
+# Habitat alias map (add your common variants here)
+HAB_ALIAS = {
+    "Urban tree": "Individual trees - Urban tree",
+    "Urban trees": "Individual trees - Urban tree",
+    "Tree - Urban": "Individual trees - Urban tree",
+    # Add more as needed
+}
+cat_names = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
+lower_map = {x.lower(): x for x in cat_names}
+
+def normalise_hab(name: str) -> str:
+    n = (name or "").strip()
+    if n in HAB_ALIAS: return HAB_ALIAS[n]
+    return lower_map.get(n.lower(), n)
+
 # =========================
-# Optimiser helpers
+# Helper checks for optimiser
 # =========================
 def enforce_catalog_rules(demand_row, supply_row) -> bool:
     # same broader_type AND supply distinctiveness >= demand distinctiveness
@@ -460,18 +461,23 @@ def prepare_options(demand_df: pd.DataFrame,
 
     return options, remaining
 
+# =========================
+# Optimiser (LP or greedy)
+# =========================
+def select_size_for_demand(demand_df: pd.DataFrame, pricing_df: pd.DataFrame) -> str:
+    present_sizes = pricing_df["contract_size"].drop_duplicates().tolist()
+    total_units = float(demand_df["units_required"].sum())
+    return select_contract_size(total_units, present_sizes)
+
 def optimise(demand_df: pd.DataFrame,
              target_lpa: str, target_nca: str,
              lpa_neigh: List[str], nca_neigh: List[str]) -> Tuple[pd.DataFrame, float, str]:
-    present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
-    total_units = float(demand_df["units_required"].sum())
-    chosen_size = select_contract_size(total_units, present_sizes)
-
+    chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
     options, remaining = prepare_options(demand_df, chosen_size, target_lpa, target_nca, lpa_neigh, nca_neigh)
     if not options:
         raise RuntimeError("No feasible options. Check naming, rules, prices, or stock availability.")
 
-    # Optimise: LP first
+    # LP first
     if _HAS_PULP:
         prob = pulp.LpProblem("BNG_Allocation", pulp.LpMinimize)
         x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
@@ -554,28 +560,226 @@ def optimise(demand_df: pd.DataFrame,
     return pd.DataFrame(rows), float(total_cost), chosen_size
 
 # =========================
-# Run UI
+# 3) Run: diagnostics + optimise
 # =========================
 st.subheader("3) Run optimiser")
+relaxed = st.checkbox("Relax catalog guardrails if no explicit TradingRules (diagnostic only)", value=False)
+st.session_state["relaxed_mode"] = relaxed
+
 left, right = st.columns([1,1])
 with left:
-    run = st.button("Optimise now", type="primary", disabled=False)
+    run = st.button("Optimise now", type="primary")
 with right:
-    st.caption("Tip: run ‘Locate’ first to load LPA/NCA & neighbours for precise tiering.")
+    st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’ for all).")
 
+# --- Deep-dive diagnostics (why it might be infeasible) ---
+with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False):
+    try:
+        dd = pd.read_csv(StringIO(demand_csv), header=None, names=["habitat_name","units_required"])
+        dd["habitat_name"] = dd["habitat_name"].astype(str).str.strip().apply(normalise_hab)
+        dd["units_required"] = dd["units_required"].astype(float)
+
+        present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+        total_units = float(dd["units_required"].sum())
+        chosen_size = select_contract_size(total_units, present_sizes)
+        st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes}, total demand: {total_units})")
+
+        st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
+        st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  |  **# NCA neighbours:** {len(nca_neighbors)}")
+
+        st.write("**Demand (after aliases):**")
+        st.dataframe(dd, use_container_width=True)
+
+        st.subheader("Pricing coverage")
+        cat_names_diag = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
+        missing_in_catalog = [h for h in dd["habitat_name"] if h not in cat_names_diag]
+        if missing_in_catalog:
+            st.error(f"Not in HabitatCatalog (fix names or add aliases): {missing_in_catalog}")
+
+        for hab in dd["habitat_name"].unique():
+            dfp = backend["Pricing"][(backend["Pricing"]["habitat_name"] == hab) &
+                                     (backend["Pricing"]["contract_size"] == chosen_size)]
+            st.write(f"- **{hab}**: {len(dfp)} price rows for `{chosen_size}`")
+            if dfp.empty:
+                st.warning("→ No pricing rows for this habitat/size; optimiser will have zero options.")
+            else:
+                st.dataframe(dfp[["bank_id","tier","price"]].sort_values(["bank_id","tier"]),
+                             use_container_width=True, hide_index=True)
+
+        st.subheader("Stock snapshot (quantity_available)")
+        df_stock = backend["Stock"].merge(backend["HabitatCatalog"], on="habitat_name", how="left")
+        df_need = df_stock[df_stock["habitat_name"].isin(dd["habitat_name"])]
+        if df_need.empty:
+            st.warning("No stock rows match your demand habitat names.")
+        else:
+            st.dataframe(df_need[["bank_id","habitat_name","quantity_available"]]
+                         .sort_values(["habitat_name","quantity_available"], ascending=[True, False]),
+                         use_container_width=True, hide_index=True)
+            if (df_need["quantity_available"] <= 0).all():
+                st.warning("All matching stock for these habitats has zero quantity_available.")
+
+        # Candidate option builder with reasons
+        st.subheader("Candidate options & capacity by habitat")
+        Banks = backend["Banks"].copy()
+        Pricing = backend["Pricing"].copy()
+        Catalog = backend["HabitatCatalog"].copy()
+        Stock = backend["Stock"].copy()
+        SRM = backend["SRM"].copy()
+        Trading = backend.get("TradingRules", pd.DataFrame())
+        srm_map = {r["tier"]: float(r["multiplier"]) for _, r in SRM.iterrows()}
+
+        D = backend["DistinctivenessLevels"]
+        dmap = {str(r["distinctiveness_name"]).strip(): float(r["level_value"]) for _, r in D.iterrows()}
+
+        stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
+                          .merge(Catalog, on="habitat_name", how="left")
+        pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
+
+        trade_idx = {}
+        if not Trading.empty:
+            for _, r in Trading.iterrows():
+                trade_idx.setdefault(str(r["demand_habitat"]).strip(), []).append({
+                    "supply_habitat": str(r["allowed_supply_habitat"]).strip(),
+                    "min_distinctiveness_name": str(r.get("min_distinctiveness_name","")).strip() or None,
+                    "companion_habitat": str(r.get("companion_habitat","")).strip() or None,
+                    "companion_ratio": float(r.get("companion_ratio",0) or 0.0),
+                })
+
+        def dval(x): return dmap.get((x or "").strip(), -1e9)
+
+        for _, row in dd.iterrows():
+            dem = row["habitat_name"]
+            req = float(row["units_required"])
+
+            st.markdown(f"**Demand: {dem} → {req} units**")
+            dcat = Catalog[Catalog["habitat_name"] == dem]
+            d_broader = str(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
+            d_dist = str(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
+            if dcat.empty:
+                st.error("✖ Not in catalog — no distinctiveness/group info. Fix names or aliases.")
+                continue
+
+            parts = []
+            reasons = []
+            if dem in trade_idx:
+                for rule in trade_idx[dem]:
+                    sh = rule["supply_habitat"]
+                    s_min = rule["min_distinctiveness_name"]
+                    df_s = stock_full[stock_full["habitat_name"] == sh].copy()
+                    if s_min:
+                        before = len(df_s)
+                        df_s = df_s[df_s["distinctiveness_name"].map(dval) >= dval(s_min)]
+                        if len(df_s) < before:
+                            reasons.append(f"- Filtered {before-len(df_s)} rows below min distinctiveness {s_min}.")
+                    df_s["companion_habitat"] = rule["companion_habitat"]
+                    df_s["companion_ratio"] = rule["companion_ratio"]
+                    if not df_s.empty:
+                        parts.append(df_s)
+                if not parts:
+                    st.error("✖ TradingRules present but produced no stock rows. Check names/distinctiveness thresholds.")
+                    continue
+            else:
+                df_s = stock_full[stock_full["habitat_name"] == dem].copy()
+                df_s["companion_habitat"] = ""
+                df_s["companion_ratio"] = 0.0
+                if df_s.empty:
+                    st.error("✖ No like-for-like stock rows found. Add stock or TradingRules.")
+                    continue
+                parts.append(df_s)
+
+            cand = pd.concat(parts, ignore_index=True)
+
+            explicit = (dem in trade_idx)
+            if not explicit and not st.session_state.get("relaxed_mode", False):
+                before = len(cand)
+                cand = cand[
+                    ((cand["broader_type"] == d_broader) | cand["broader_type"].isna() | (cand["broader_type"] == "")) &
+                    (cand["distinctiveness_name"].map(dval) >= dval(d_dist))
+                ]
+                if len(cand) < before:
+                    reasons.append(f"- Guardrails removed {before-len(cand)} rows (group/distinctiveness).")
+
+            if cand.empty:
+                st.error("✖ No candidates after catalog guardrails.")
+                if reasons: st.caption("\n".join(reasons))
+                continue
+
+            rows = []
+            removed_no_price = 0
+            for _, s in cand.iterrows():
+                tier = tier_for_bank(s.get("lpa_name",""), s.get("nca_name",""),
+                                     target_lpa_name or "", target_nca_name or "", lpa_neighbors, nca_neighbors)
+                pr = pricing_cs[(pricing_cs["bank_id"] == s["bank_id"]) &
+                                (pricing_cs["habitat_name"] == s["habitat_name"]) &
+                                (pricing_cs["tier"] == tier)]
+                if pr.empty:
+                    removed_no_price += 1
+                    continue
+                rows.append({
+                    "bank_id": s["bank_id"],
+                    "supply_habitat": s["habitat_name"],
+                    "tier": tier,
+                    "unit_price": float(pr["price"].iloc[0]),
+                    "srm_mult": float(srm_map.get(tier, 0.5)),
+                    "stock_cap": float(s["quantity_available"]),
+                    "companion_habitat": s.get("companion_habitat","") or "",
+                    "companion_ratio": float(s.get("companion_ratio",0.0) or 0.0),
+                })
+            if removed_no_price:
+                reasons.append(f"- Dropped {removed_no_price} rows with no price for chosen size + tier.")
+
+            cand2 = pd.DataFrame(rows)
+            if cand2.empty:
+                st.error("✖ All candidates dropped due to missing prices (contract size/tier).")
+                if reasons: st.caption("\n".join(reasons))
+                continue
+
+            before = len(cand2)
+            cand2 = cand2[cand2["stock_cap"] > 0]
+            if len(cand2) < before:
+                reasons.append(f"- Removed {before-len(cand2)} rows with zero stock.")
+            if cand2.empty:
+                st.error("✖ No candidates have positive stock.")
+                if reasons: st.caption("\n".join(reasons))
+                continue
+
+            cand2["eff_from_primary"] = cand2["stock_cap"] * cand2["srm_mult"]
+            eff_cap = cand2["eff_from_primary"].sum()
+
+            comp_rows = cand2[cand2["companion_habitat"] == dem]
+            if not comp_rows.empty:
+                cand2["eff_from_companion"] = cand2["stock_cap"] * cand2["companion_ratio"] * cand2["srm_mult"]
+                eff_cap += cand2["eff_from_companion"].sum()
+
+            st.dataframe(cand2.sort_values(["unit_price","tier","bank_id"]),
+                         use_container_width=True, hide_index=True)
+
+            if reasons:
+                st.caption("\n".join(reasons))
+
+            if eff_cap + 1e-9 < req:
+                st.error(f"✖ Insufficient effective capacity: need {req}, best-case {eff_cap:.3f}")
+            else:
+                st.success(f"✔ Effective capacity OK (need {req}, best-case {eff_cap:.3f})")
+
+    except Exception as de:
+        st.error(f"Diagnostics error: {de}")
+
+# --- Run optimiser ---
 if run:
     try:
         demand_df = pd.read_csv(StringIO(demand_csv), header=None, names=["habitat_name","units_required"])
-        demand_df["habitat_name"] = demand_df["habitat_name"].astype(str).str.strip()
+        demand_df["habitat_name"] = demand_df["habitat_name"].astype(str).str.strip().apply(normalise_hab)
         demand_df["units_required"] = demand_df["units_required"].astype(float)
 
         # Guard: demand habitats exist in catalog
-        cat_names = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names]
+        cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
+        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run]
         if unknown:
-            st.warning(f"These demand habitats aren’t in the catalog: {unknown}")
+            st.error(f"These demand habitats aren’t in the catalog: {unknown}")
+            st.stop()
 
-        # If user didn’t run Locate, we still allow optimisation using 'far' tier everywhere
+        # If user didn’t run Locate, proceed with 'far' everywhere
         if not target_lpa_name and not target_nca_name:
             lpa_neighbors, nca_neighbors = [], []
             target_lpa, target_nca = "", ""
@@ -626,4 +830,5 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
