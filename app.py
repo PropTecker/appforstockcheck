@@ -1,4 +1,5 @@
-# app.py — BNG Optimiser (Standalone) with login, POST fix, aliases & diagnostics
+# app.py — BNG Optimiser (Standalone) with login, POST fix, aliases, diagnostics,
+# and OFFICIAL distinctiveness trading rules
 
 import json
 from io import StringIO, BytesIO
@@ -16,7 +17,7 @@ import folium
 # =========================
 st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
 st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
-st.caption("Upload backend workbook, locate target site, and optimise supply with SRM, distinctiveness and TradingRules.")
+st.caption("Upload backend workbook, locate target site, and optimise supply with SRM, official distinctiveness trading rules, and TradingRules.")
 
 # =========================
 # Login wall (secrets first, else fallback)
@@ -264,7 +265,7 @@ for sheet, cols in {
         st.error(f"{sheet} is missing required columns: {missing}")
         st.stop()
 
-# Distinctiveness mapping
+# Distinctiveness mapping (names → numeric rank; ensure Low<Medium<High<Very High)
 dist_levels_map = {
     str(r["distinctiveness_name"]).strip(): float(r["level_value"])
     for _, r in backend["DistinctivenessLevels"].iterrows()
@@ -324,7 +325,7 @@ st.subheader("2) Demand (units required)")
 default_demand = "Individual trees - Urban tree,8\nGrassland - Other neutral grassland,30"
 demand_csv = st.text_area("CSV: habitat_name,units_required", value=default_demand, height=120)
 
-# Habitat alias map (add your common variants here)
+# Habitat alias map (add your common variants here to match official names)
 HAB_ALIAS = {
     "Urban tree": "Individual trees - Urban tree",
     "Urban trees": "Individual trees - Urban tree",
@@ -340,18 +341,57 @@ def normalise_hab(name: str) -> str:
     return lower_map.get(n.lower(), n)
 
 # =========================
+# OFFICIAL trading rules helper
+# =========================
+def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
+    """
+    Official logic from distinctiveness table:
+
+    - Low demand  → can be traded for anything (any group, any distinctiveness).
+    - Medium demand → allowed if (same broader group) OR (supply has higher distinctiveness).
+    - High / Very High demand → like-for-like ONLY (same habitat_name).
+    - If an explicit TradingRules row applies for this demand, it overrides these checks.
+    """
+    if explicit_rule:
+        return True  # explicit TradingRules entry allows this substitution
+
+    dh = str(demand_row.get("habitat_name", "")).strip()
+    sh = str(supply_row.get("habitat_name", "")).strip()
+
+    d_group = str(demand_row.get("broader_type", "") or "").strip()
+    s_group = str(supply_row.get("broader_type", "") or "").strip()
+
+    d_dist_name = str(demand_row.get("distinctiveness_name", "") or "").strip()
+    s_dist_name = str(supply_row.get("distinctiveness_name", "") or "").strip()
+
+    d_key = d_dist_name.lower()
+    s_key = s_dist_name.lower()
+
+    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
+    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_key, -1e9))
+
+    # Low → anything
+    if d_key == "low":
+        return True
+
+    # Medium → same group OR strictly higher distinctiveness (higher means s_val > d_val)
+    if d_key == "medium":
+        same_group = (d_group and s_group and d_group == s_group)
+        higher_distinctiveness = (s_val > d_val)
+        return bool(same_group or higher_distinctiveness)
+
+    # High / Very High → like-for-like only
+    if d_key in ("high", "very high", "very_high", "very-high"):
+        return sh == dh
+
+    # Unknown label fallback: behave like Medium (conservative+useful)
+    same_group = (d_group and s_group and d_group == s_group)
+    higher_distinctiveness = (s_val > d_val)
+    return bool(same_group or higher_distinctiveness)
+
+# =========================
 # Helper checks for optimiser
 # =========================
-def enforce_catalog_rules(demand_row, supply_row) -> bool:
-    # same broader_type AND supply distinctiveness >= demand distinctiveness
-    dbt = str(demand_row.get("broader_type","")).strip()
-    sbt = str(supply_row.get("broader_type","")).strip()
-    dd = dist_levels_map.get(str(demand_row.get("distinctiveness_name","")).strip(), None)
-    sd = dist_levels_map.get(str(supply_row.get("distinctiveness_name","")).strip(), None)
-    if dbt and sbt and dbt != sbt: return False
-    if (dd is not None) and (sd is not None) and (sd < dd): return False
-    return True
-
 def prepare_options(demand_df: pd.DataFrame,
                     chosen_size: str,
                     target_lpa: str, target_nca: str,
@@ -411,7 +451,7 @@ def prepare_options(demand_df: pd.DataFrame,
             if not df_s.empty:
                 cand_parts.append(df_s)
 
-        # 2) If no explicit rule, allow like-for-like subject to catalog guardrails
+        # 2) If no explicit rule, allow like-for-like subject to official rules
         if not cand_parts:
             df_s = stock_full[stock_full["habitat_name"] == dem_hab].copy()
             df_s["companion_habitat"] = ""
@@ -424,7 +464,7 @@ def prepare_options(demand_df: pd.DataFrame,
 
         candidates = pd.concat(cand_parts, ignore_index=True)
 
-        # Attach tier & price
+        # Attach tier & price + enforce official rules
         for _, s in candidates.iterrows():
             tier = tier_for_bank(s.get("lpa_name",""), s.get("nca_name",""),
                                  target_lpa, target_nca, lpa_neigh, nca_neigh)
@@ -436,10 +476,12 @@ def prepare_options(demand_df: pd.DataFrame,
             if price_row.empty:
                 continue
 
-            # If came from explicit TradingRules, skip catalog guardrail; else enforce it
-            explicit = dem_hab in trade_idx
-            if not explicit and not enforce_catalog_rules(
-                pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}), s
+            explicit = (dem_hab in trade_idx)
+            if not enforce_catalog_rules_official(
+                pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
+                s,
+                dist_levels_map,
+                explicit_rule=explicit
             ):
                 continue
 
@@ -475,7 +517,7 @@ def optimise(demand_df: pd.DataFrame,
     chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
     options, remaining = prepare_options(demand_df, chosen_size, target_lpa, target_nca, lpa_neigh, nca_neigh)
     if not options:
-        raise RuntimeError("No feasible options. Check naming, rules, prices, or stock availability.")
+        raise RuntimeError("No feasible options. Check names, official rules, TradingRules, prices, or stock availability.")
 
     # LP first
     if _HAS_PULP:
@@ -563,8 +605,9 @@ def optimise(demand_df: pd.DataFrame,
 # 3) Run: diagnostics + optimise
 # =========================
 st.subheader("3) Run optimiser")
-relaxed = st.checkbox("Relax catalog guardrails if no explicit TradingRules (diagnostic only)", value=False)
-st.session_state["relaxed_mode"] = relaxed
+relaxed = st.checkbox("Relax official rules if explicit TradingRules exist (debug only)", value=False,
+                      help="If ticked, explicit TradingRules still override; otherwise official rules apply. Use for debugging only.")
+st.session_state["relaxed_mode"] = relaxed  # kept for potential future toggles (not used by official helper)
 
 left, right = st.columns([1,1])
 with left:
@@ -659,6 +702,10 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
                 st.error("✖ Not in catalog — no distinctiveness/group info. Fix names or aliases.")
                 continue
 
+            # policy caption
+            pol = "Low→anything" if d_dist.lower()=="low" else ("Medium→same group OR higher distinctiveness" if d_dist.lower()=="medium" else "High/Very High→like-for-like")
+            st.caption(f"Trading policy for '{dem}': {pol}")
+
             parts = []
             reasons = []
             if dem in trade_idx:
@@ -690,40 +737,44 @@ with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False
             cand = pd.concat(parts, ignore_index=True)
 
             explicit = (dem in trade_idx)
-            if not explicit and not st.session_state.get("relaxed_mode", False):
-                before = len(cand)
-                cand = cand[
-                    ((cand["broader_type"] == d_broader) | cand["broader_type"].isna() | (cand["broader_type"] == "")) &
-                    (cand["distinctiveness_name"].map(dval) >= dval(d_dist))
-                ]
-                if len(cand) < before:
-                    reasons.append(f"- Guardrails removed {before-len(cand)} rows (group/distinctiveness).")
-
+            before = len(cand)
+            # Apply official rules (explicit rules override)
+            mask = cand.apply(
+                lambda srow: enforce_catalog_rules_official(
+                    pd.Series({"habitat_name": dem, "broader_type": d_broader, "distinctiveness_name": d_dist}),
+                    srow,
+                    dist_levels_map,
+                    explicit_rule=explicit
+                ), axis=1
+            )
+            cand = cand[mask]
+            if len(cand) < before:
+                reasons.append(f"- Official rules filtered {before-len(cand)} rows.")
             if cand.empty:
-                st.error("✖ No candidates after catalog guardrails.")
+                st.error("✖ No candidates after official distinctiveness rules.")
                 if reasons: st.caption("\n".join(reasons))
                 continue
 
             rows = []
             removed_no_price = 0
-            for _, s in cand.iterrows():
-                tier = tier_for_bank(s.get("lpa_name",""), s.get("nca_name",""),
+            for _, srow in cand.iterrows():
+                tier = tier_for_bank(srow.get("lpa_name",""), srow.get("nca_name",""),
                                      target_lpa_name or "", target_nca_name or "", lpa_neighbors, nca_neighbors)
-                pr = pricing_cs[(pricing_cs["bank_id"] == s["bank_id"]) &
-                                (pricing_cs["habitat_name"] == s["habitat_name"]) &
+                pr = pricing_cs[(pricing_cs["bank_id"] == srow["bank_id"]) &
+                                (pricing_cs["habitat_name"] == srow["habitat_name"]) &
                                 (pricing_cs["tier"] == tier)]
                 if pr.empty:
                     removed_no_price += 1
                     continue
                 rows.append({
-                    "bank_id": s["bank_id"],
-                    "supply_habitat": s["habitat_name"],
+                    "bank_id": srow["bank_id"],
+                    "supply_habitat": srow["habitat_name"],
                     "tier": tier,
                     "unit_price": float(pr["price"].iloc[0]),
                     "srm_mult": float(srm_map.get(tier, 0.5)),
-                    "stock_cap": float(s["quantity_available"]),
-                    "companion_habitat": s.get("companion_habitat","") or "",
-                    "companion_ratio": float(s.get("companion_ratio",0.0) or 0.0),
+                    "stock_cap": float(srow["quantity_available"]),
+                    "companion_habitat": srow.get("companion_habitat","") or "",
+                    "companion_ratio": float(srow.get("companion_ratio",0) or 0.0),
                 })
             if removed_no_price:
                 reasons.append(f"- Dropped {removed_no_price} rows with no price for chosen size + tier.")
@@ -830,5 +881,6 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
