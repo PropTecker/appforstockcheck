@@ -1,13 +1,13 @@
-# app.py — BNG Optimiser (Standalone, v3)
-# Key points:
-# - Login (WC0323 / Wimbourne fallback)
-# - Dynamic Bank LPA/NCA enrichment
-# - Robust HTTP + POST (avoids 414)
-# - Locate draws LPA/NCA polygons
+# app.py — BNG Optimiser (Standalone, v4)
+# - Login (WC0323 / Wimbourne fallback unless set in st.secrets)
+# - Dynamic Banks LPA/NCA enrichment (lat/lon/postcode/address -> polygons)
+# - Robust HTTP + POST for polygon queries (avoid 414)
+# - Locate draws LPA/NCA polygons immediately
 # - Demand builder with autosuggest + "➕ Net Gain (Low-equivalent)"
-# - Official trading rules (Low/Medium/High+); no SRM math (already priced in)
-# - Prefer 1 bank (≤2 max). MILP with bank binaries if PuLP; greedy fallback otherwise
-# - Medium fallback: Orchard + Scrub pair (0.5+0.5 from same bank) only when site is not local/adjacent to any bank; deprioritized vs direct Medium swaps
+# - Official trading rules (Low/Medium/High+); NO SRM math (already priced in matrix)
+# - Prefer LOCAL/ADJACENT stock first; FAR only for shortfall
+# - Prefer 1 bank (≤2 banks max). MILP with bank-binaries if PuLP present; greedy fallback otherwise
+# - Medium fallback: Orchard + Scrub pair (0.5+0.5 from same bank) only when site has NO local/adjacent banks; deprioritised vs direct swaps
 # - Post-optimisation map overlay: chosen bank markers + target→bank lines
 
 import json
@@ -485,7 +485,7 @@ with st.container(border=True):
             )
             st.session_state._next_row_id += 1
     with cc2:
-        if st.button("➕ Net Gain (Low-equivalent)", help="Adds a 'Net Gain' line you can type units into. Trades like Low distinctiveness (can source from any habitat)."):
+        if st.button("➕ Net Gain (Low-equivalent)", help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
             st.session_state.demand_rows.append(
                 {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
             )
@@ -659,10 +659,9 @@ def prepare_options(demand_df: pd.DataFrame,
 
         candidates = pd.concat(cand_parts, ignore_index=True)
 
-        # Normal (direct) options
+        # Normal (direct) options — tag proximity for later prioritisation
         for _, s in candidates.iterrows():
             explicit = (dem_hab in trade_idx)
-            # respect official rules unless explicit
             if not enforce_catalog_rules_official(
                 pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
                 s, dist_levels_map, explicit_rule=explicit
@@ -688,6 +687,7 @@ def prepare_options(demand_df: pd.DataFrame,
                 "bank_id": s["bank_id"],
                 "supply_habitat": s["habitat_name"],
                 "tier": tier,
+                "proximity": tier,  # local/adjacent/far
                 "unit_price": float(pr["price"].iloc[0]),
                 "stock_use": {sstr(s["stock_id"]): 1.0},
             })
@@ -732,6 +732,7 @@ def prepare_options(demand_df: pd.DataFrame,
                             "bank_id": b,
                             "supply_habitat": f"{ORCHARD_NAME} + {sstr(s['habitat_name'])}",
                             "tier": tier_b,
+                            "proximity": tier_b,  # local/adjacent/far as computed
                             "unit_price": price,
                             "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s["stock_id"]): 0.5},
                         })
@@ -756,7 +757,7 @@ def optimise(demand_df: pd.DataFrame,
     for i, opt in enumerate(options):
         idx_by_dem.setdefault(opt["demand_idx"], []).append(i)
 
-    # ---- MILP (prefer 1 bank; ≤2 max); prefer direct swaps over paired on ties
+    # ---- MILP (prefer 1 bank; ≤2 max); prioritise local/adjacent over far; prefer direct over paired on ties
     if _HAS_PULP:
         def solve_with_bank_limit(max_banks: int) -> Tuple[Optional[pd.DataFrame], Optional[float]]:
             prob = pulp.LpProblem("BNG_Allocation_MILP", pulp.LpMinimize)
@@ -764,12 +765,19 @@ def optimise(demand_df: pd.DataFrame,
             banks = sorted({opt["bank_id"] for opt in options})
             y = {b: pulp.LpVariable(f"y_{b}", lowBound=0, upBound=1, cat="Binary") for b in banks}
 
-            # objective
-            eps_bank, eps_paired = 1e-4, 1e-6
+            # objective (lexicographic): 1) minimise FAR usage, 2) minimise cost, 3) fewer banks, 4) prefer direct over paired
+            total_units_req = float(demand_df["units_required"].sum())
+            max_price = max([o["unit_price"] for o in options]) if options else 1.0
+            BIG = max(1.0, max_price) * max(1.0, total_units_req) * 1000.0
+
+            far_usage = pulp.lpSum([x[i] for i in range(len(options)) if options[i]["proximity"] == "far"])
             cost_term = pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))])
+            eps_bank   = 1e-4   # prefer fewer banks
+            eps_paired = 1e-6   # prefer direct over paired on ties
             bank_pen  = eps_bank * pulp.lpSum([y[b] for b in banks])
             pair_pen  = eps_paired * pulp.lpSum([x[i] for i in range(len(options)) if options[i]["type"] == "paired"])
-            prob += cost_term + bank_pen + pair_pen
+
+            prob += BIG * far_usage + cost_term + bank_pen + pair_pen
 
             # link x to bank y with big-M
             M_bank: Dict[str, float] = {b: 0.0 for b in banks}
@@ -835,7 +843,7 @@ def optimise(demand_df: pd.DataFrame,
         alloc_df, total_cost = res
         return alloc_df, total_cost, chosen_size
 
-    # ---- Greedy fallback (prefer 1 bank; else best 2). Paired deprioritised on ties
+    # ---- Greedy fallback (prefer 1 bank; else best 2). Prioritise non-far first; paired deprioritised on ties
     from collections import defaultdict
 
     options_by_bank: Dict[str, List[int]] = defaultdict(list)
@@ -849,8 +857,12 @@ def optimise(demand_df: pd.DataFrame,
         for di, drow in demand_df.iterrows():
             need = float(drow["units_required"])
             cand = [i for i, opt in enumerate(options) if opt["demand_idx"] == di and opt["bank_id"] in allowed_banks]
-            # sort by (price, paired_flag) to prefer direct on ties
-            cand.sort(key=lambda i: (options[i]["unit_price"], 1 if options[i]["type"] == "paired" else 0))
+            # sort by proximity first (local/adjacent before far), then price, then prefer direct on ties
+            cand.sort(key=lambda i: (
+                1 if options[i]["proximity"] == "far" else 0,
+                options[i]["unit_price"],
+                1 if options[i]["type"] == "paired" else 0
+            ))
             for i in cand:
                 if need <= 1e-9: break
                 opt = options[i]
@@ -859,7 +871,7 @@ def optimise(demand_df: pd.DataFrame,
                 for sid, coef in opt["stock_use"].items():
                     if coef <= 0: continue
                     max_take = min(max_take, caps.get(sid, 0.0) / coef if coef > 0 else float('inf'))
-                if max_take <= 1e-9: 
+                if max_take <= 1e-9:
                     continue
                 take = min(max_take, need)
                 for sid, coef in opt["stock_use"].items():
@@ -880,26 +892,39 @@ def optimise(demand_df: pd.DataFrame,
         df = pd.DataFrame(rows)
         return True, df, float(df["cost"].sum()) if not df.empty else 0.0
 
-    # rank banks by average cheapest option
-    bank_prices = []
-    for b, idxs in options_by_bank.items():
-        if not idxs: continue
-        bank_prices.append((b, float(np.mean([options[i]["unit_price"] for i in idxs]))))
-    bank_prices.sort(key=lambda x: x[1])
-    order = [b for b, _ in bank_prices]
+    # Rank banks: any with non-far options first (by their cheapest non-far price), then far-only banks (by cheapest price)
+    banks_with_nonfar = []
+    banks_far_only = []
+    cheapest_nonfar = {}
+    cheapest_any = {}
 
-    # try 1 bank
-    for b in order:
+    for b, idxs in options_by_bank.items():
+        prices_nonfar = [options[i]["unit_price"] for i in idxs if options[i]["proximity"] != "far"]
+        prices_all    = [options[i]["unit_price"] for i in idxs]
+        if prices_nonfar:
+            banks_with_nonfar.append(b)
+            cheapest_nonfar[b] = min(prices_nonfar)
+        if prices_all:
+            cheapest_any[b] = min(prices_all)
+        if not prices_nonfar and prices_all:
+            banks_far_only.append(b)
+
+    banks_with_nonfar.sort(key=lambda bb: cheapest_nonfar[bb])
+    banks_far_only.sort(key=lambda bb: cheapest_any[bb])
+    bank_order_pref = banks_with_nonfar + banks_far_only
+
+    # try 1 bank (prefer non-far capable)
+    for b in bank_order_pref:
         ok, df, cost = greedy_for_banks([b])
         if ok:
             return df, cost, chosen_size
 
-    # try best pairs
-    n = len(order)
+    # try best pairs (keep ≤2 banks)
+    n = len(bank_order_pref)
     best_df, best_cost = None, float("inf")
     for i in range(n):
         for j in range(i+1, n):
-            ok, df, cost = greedy_for_banks([order[i], order[j]])
+            ok, df, cost = greedy_for_banks([bank_order_pref[i], bank_order_pref[j]])
             if ok and cost < best_cost:
                 best_df, best_cost = df, cost
     if best_df is None:
@@ -1019,13 +1044,12 @@ if run:
                         continue
                     lat_b, lon_b = latlon
                     popup_lines = []
-                    total_units = g["units_supplied"].sum()
-                    total_cost = g["cost"].sum()
+                    total_units_b = g["units_supplied"].sum()
+                    total_cost_b = g["cost"].sum()
                     popup_lines.append(f"<b>Bank:</b> {bank_id}")
-                    popup_lines.append(f"<b>Total units:</b> {total_units:.3f}")
-                    popup_lines.append(f"<b>Total cost:</b> £{total_cost:,.0f}")
+                    popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
+                    popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
                     popup_lines.append("<b>Breakdown:</b>")
-                    # top 6 rows
                     for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
                         popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
 
@@ -1061,6 +1085,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
