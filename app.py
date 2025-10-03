@@ -1147,6 +1147,20 @@ with st.expander("🔎 Diagnostics", expanded=False):
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
 
+st.write("**Stock sanity**")
+try:
+    s = backend["Stock"].copy()
+    s["quantity_available"] = pd.to_numeric(s["quantity_available"], errors="coerce").fillna(0)
+    st.write(f"Non-zero stock rows: **{(s['quantity_available']>0).sum()}** | "
+             f"Total available units: **{s['quantity_available'].sum():.2f}**")
+    st.dataframe(
+        s[s["quantity_available"]>0][["bank_id","habitat_name","quantity_available"]]
+          .sort_values("quantity_available", ascending=False).head(20),
+        use_container_width=True, hide_index=True
+    )
+except Exception as e:
+    st.warning(f"Stock sanity check failed: {e}")
+
 # ========= Proximity Audit =========
 with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t chosen)", expanded=False):
     try:
