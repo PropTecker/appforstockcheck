@@ -436,22 +436,74 @@ if (target_lat is not None) and (target_lon is not None):
     st.markdown("### Map")
     st_folium(fmap, height=420, returned_objects=[], use_container_width=True)
 
-# ========= Demand =========
+# =========================
+# Demand builder (interactive rows with autosuggest)
+# =========================
 st.subheader("2) Demand (units required)")
-default_demand = "Individual trees - Rural tree,0.08\nGrassland - Other neutral grassland,0.3"
-demand_csv = st.text_area("CSV: habitat_name,units_required", value=default_demand, height=120)
 
-HAB_ALIAS = {
-    "Urban tree": "Individual trees - Urban tree",
-    "Urban trees": "Individual trees - Urban tree",
-    "Tree - Urban": "Individual trees - Urban tree",
-}
-cat_names = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-lower_map = {sstr(x).lower(): sstr(x) for x in cat_names}
-def normalise_hab(name: str) -> str:
-    n = sstr(name)
-    if n in HAB_ALIAS: return HAB_ALIAS[n]
-    return lower_map.get(n.lower(), n)
+def init_demand_state():
+    if "demand_rows" not in st.session_state:
+        # start with one empty row
+        st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
+        st.session_state._next_row_id = 2
+
+init_demand_state()
+
+# Choices come from the catalog (type to search)
+HAB_CHOICES = sorted(
+    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()]
+)
+
+with st.container(border=True):
+    st.markdown("**Add habitats one by one** (type to search the catalog):")
+
+    to_delete = []
+    for idx, row in enumerate(st.session_state.demand_rows):
+        c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
+        with c1:
+            st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
+                "Habitat", HAB_CHOICES,
+                index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                key=f"hab_{row['id']}",
+                help="Start typing to filter",
+            )
+        with c2:
+            st.session_state.demand_rows[idx]["units"] = st.number_input(
+                "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), key=f"units_{row['id']}"
+            )
+        with c3:
+            if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
+                to_delete.append(row["id"])
+
+    # remove any rows requested for deletion
+    if to_delete:
+        st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
+
+    cc1, cc2, cc3 = st.columns([0.4, 0.35, 0.25])
+    with cc1:
+        if st.button("➕ Add habitat"):
+            st.session_state.demand_rows.append(
+                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+            )
+            st.session_state._next_row_id += 1
+    with cc2:
+        if st.button("🧹 Clear all"):
+            init_demand_state()
+            st.rerun()
+    with cc3:
+        total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
+        st.metric("Total units", f"{total_units:.2f}")
+
+# Build demand_df for downstream code
+demand_df = pd.DataFrame(
+    [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
+     for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
+)
+
+if demand_df.empty:
+    st.info("Add at least one habitat and units to continue.", icon="ℹ️")
+else:
+    st.dataframe(demand_df, use_container_width=True, hide_index=True)
 
 # ========= Official rules =========
 def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
@@ -744,232 +796,104 @@ def optimise(demand_df: pd.DataFrame,
     total_cost = float(sum(r["cost"] for r in rows))
     return pd.DataFrame(rows), total_cost, chosen_size
 
-# ========= Run optimiser UI =========
+# =========================
+# 3) Run optimiser
+# =========================
 st.subheader("3) Run optimiser")
-relaxed = st.checkbox("Relax official rules if explicit TradingRules exist (debug only)", value=False)
 
-cL, cR = st.columns([1,1])
-with cL:
-    run = st.button("Optimise now", type="primary")
-with cR:
+left, right = st.columns([1,1])
+with left:
+    run = st.button("Optimise now", type="primary", disabled=demand_df.empty)
+with right:
     if target_lpa_name or target_nca_name:
         st.caption(f"LPA: {target_lpa_name or '—'} | NCA: {target_nca_name or '—'} | "
                    f"LPA neigh: {len(lpa_neighbors)} | NCA neigh: {len(nca_neighbors)}")
     else:
-        st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’).")
+        st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’ for all).")
 
-# ========= Diagnostics =========
+# --- Diagnostics ---
 with st.expander("🔎 Diagnostics (why it might be infeasible)", expanded=False):
     try:
-        dd = pd.read_csv(StringIO(demand_csv), header=None, names=["habitat_name","units_required"])
-        dd["habitat_name"] = dd["habitat_name"].map(sstr).map(normalise_hab)
-        dd["units_required"] = dd["units_required"].astype(float)
-
-        present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
-        total_units = float(dd["units_required"].sum())
-        size_preview = select_contract_size(total_units, present_sizes)
-        st.write(f"**Chosen contract size:** `{size_preview}` (present sizes: {present_sizes}, total demand: {total_units})")
-        st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
-        st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
-
-        st.write("**Demand (after aliases):**")
-        st.dataframe(dd, use_container_width=True)
-
-        st.subheader("Pricing coverage")
-        cat_names_diag = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        missing_in_catalog = [h for h in dd["habitat_name"] if h not in cat_names_diag]
-        if missing_in_catalog:
-            st.error(f"Not in HabitatCatalog (fix names or add aliases): {missing_in_catalog}")
-
-        for hab in dd["habitat_name"].unique():
-            dfp = backend["Pricing"][(backend["Pricing"]["habitat_name"] == hab) &
-                                     (backend["Pricing"]["contract_size"] == size_preview)]
-            st.write(f"- **{hab}**: {len(dfp)} price rows for `{size_preview}`")
-            if dfp.empty:
-                st.warning("→ No pricing rows for this habitat/size; optimiser will have zero options.")
-            else:
-                st.dataframe(dfp[["bank_id","tier","price"]].sort_values(["bank_id","tier"]),
-                             use_container_width=True, hide_index=True)
-
-        st.subheader("Stock snapshot (quantity_available)")
-        df_stock = backend["Stock"].merge(backend["HabitatCatalog"], on="habitat_name", how="left")
-        df_need = df_stock[df_stock["habitat_name"].isin(dd["habitat_name"])]
-        if df_need.empty:
-            st.warning("No stock rows match your demand habitat names.")
+        if demand_df.empty:
+            st.info("Add some demand rows above to see diagnostics.", icon="ℹ️")
         else:
-            st.dataframe(df_need[["bank_id","habitat_name","quantity_available"]]
-                         .sort_values(["habitat_name","quantity_available"], ascending=[True, False]),
-                         use_container_width=True, hide_index=True)
+            dd = demand_df.copy()
 
-        # Candidate options preview with tiers
-        st.subheader("Candidate options & capacity by habitat")
-        Banks = backend["Banks"].copy()
-        Pricing = backend["Pricing"].copy()
-        Catalog = backend["HabitatCatalog"].copy()
-        Stock = backend["Stock"].copy()
-        SRM = backend["SRM"].copy()
-        Trading = backend.get("TradingRules", pd.DataFrame())
+            present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+            total_units = float(dd["units_required"].sum())
+            chosen_size = select_contract_size(total_units, present_sizes)
+            st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes}, total demand: {total_units})")
 
-        for df, cols in [
-            (Banks, ["lpa_name","nca_name"]),
-            (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
-            (Stock, ["habitat_name"]),
-            (Pricing, ["habitat_name","contract_size","tier"]),
-            (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
-        ]:
-            if not df.empty:
-                for c in cols:
-                    if c in df.columns: df[c] = df[c].map(sstr)
+            st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
+            st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
 
-        srm_map = {sstr(r["tier"]): float(r["multiplier"]) for _, r in backend["SRM"].iterrows()}
-        D = backend["DistinctivenessLevels"]
-        dmap = {sstr(r["distinctiveness_name"]): float(r["level_value"]) for _, r in D.iterrows()}
-        dmap.update({k.lower(): v for k, v in list(dmap.items())})
+            st.write("**Demand:**")
+            st.dataframe(dd, use_container_width=True)
 
-        stock_full = Stock.merge(Banks[["bank_id","lpa_name","nca_name"]], on="bank_id", how="left") \
-                          .merge(Catalog, on="habitat_name", how="left")
-        pricing_cs = Pricing[Pricing["contract_size"] == size_preview].copy()
+            st.subheader("Pricing coverage")
+            cat_names_diag = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
+            missing_in_catalog = [h for h in dd["habitat_name"] if h not in cat_names_diag]
+            if missing_in_catalog:
+                st.error(f"Not in HabitatCatalog (fix names): {missing_in_catalog}")
 
-        trade_idx = {}
-        if not Trading.empty:
-            for _, r in Trading.iterrows():
-                trade_idx.setdefault(sstr(r["demand_habitat"]), []).append({
-                    "supply_habitat": sstr(r["allowed_supply_habitat"]),
-                    "min_distinctiveness_name": sstr(r.get("min_distinctiveness_name")),
-                    "companion_habitat": sstr(r.get("companion_habitat")),
-                    "companion_ratio": float(r.get("companion_ratio",0) or 0.0),
-                })
-
-        def dval(x):
-            key = sstr(x)
-            return dmap.get(key, dmap.get(key.lower(), -1e9))
-
-        for _, row in dd.iterrows():
-            dem = sstr(row["habitat_name"]); req = float(row["units_required"])
-            st.markdown(f"**Demand: {dem} → {req} units**")
-            dcat = Catalog[Catalog["habitat_name"] == dem]
-            d_broader = sstr(dcat["broader_type"].iloc[0]) if not dcat.empty else ""
-            d_dist = sstr(dcat["distinctiveness_name"].iloc[0]) if not dcat.empty else ""
-            if dcat.empty:
-                st.error("✖ Not in catalog — add to HabitatCatalog or fix alias.")
-                continue
-            pol = "Low→anything" if d_dist.lower()=="low" else ("Medium→same group OR higher distinctiveness" if d_dist.lower()=="medium" else "High/Very High→like-for-like")
-            st.caption(f"Trading policy for '{dem}': {pol}")
-
-            parts, reasons = [], []
-            if dem in trade_idx:
-                for rule in trade_idx[dem]:
-                    sh = rule["supply_habitat"]; s_min = rule["min_distinctiveness_name"]
-                    df_s = stock_full[stock_full["habitat_name"] == sh].copy()
-                    if s_min:
-                        before = len(df_s)
-                        df_s = df_s[df_s["distinctiveness_name"].map(dval) >= dval(s_min)]
-                        if len(df_s) < before:
-                            reasons.append(f"- Filtered {before-len(df_s)} rows below min distinctiveness {s_min}.")
-                    df_s["companion_habitat"] = rule["companion_habitat"]; df_s["companion_ratio"] = rule["companion_ratio"]
-                    if not df_s.empty: parts.append(df_s)
-                if not parts:
-                    st.error("✖ TradingRules present but produced no stock rows.")
-                    continue
-            else:
-                d_key = d_dist.lower()
-                if d_key == "low":
-                    df_s = stock_full.copy()
-                elif d_key == "medium":
-                    same_group = stock_full["broader_type"].fillna("").astype(str).map(sstr).eq(d_broader)
-                    higher_dist = stock_full["distinctiveness_name"].map(dval) > dval(d_dist)
-                    df_s = stock_full[same_group | higher_dist].copy()
+            for hab in dd["habitat_name"].unique():
+                dfp = backend["Pricing"][(backend["Pricing"]["habitat_name"] == hab) &
+                                         (backend["Pricing"]["contract_size"] == chosen_size)]
+                st.write(f"- **{hab}**: {len(dfp)} price rows for `{chosen_size}`")
+                if dfp.empty:
+                    st.warning("→ No pricing rows for this habitat/size; optimiser will have zero options.")
                 else:
-                    df_s = stock_full[stock_full["habitat_name"] == dem].copy()
-                df_s["companion_habitat"] = ""; df_s["companion_ratio"] = 0.0
-                if df_s.empty:
-                    st.error("✖ No candidates from official rules.")
-                    continue
-                parts.append(df_s)
+                    st.dataframe(dfp[["bank_id","tier","price"]].sort_values(["bank_id","tier"]),
+                                 use_container_width=True, hide_index=True)
 
-            cand = pd.concat(parts, ignore_index=True)
-            explicit = (dem in trade_idx)
-            before = len(cand)
-            mask = cand.apply(lambda srow: enforce_catalog_rules_official(
-                    pd.Series({"habitat_name": dem, "broader_type": d_broader, "distinctiveness_name": d_dist}),
-                    srow, dist_levels_map, explicit_rule=explicit
-                ), axis=1)
-            cand = cand[mask]
-            if len(cand) < before:
-                reasons.append(f"- Official rules filtered {before-len(cand)} rows.")
-            if cand.empty:
-                st.error("✖ No candidates after official rules.")
-                if reasons: st.caption("\n".join(reasons))
-                continue
+            st.subheader("Stock snapshot (quantity_available)")
+            df_stock = backend["Stock"].merge(backend["HabitatCatalog"], on="habitat_name", how="left")
+            df_need = df_stock[df_stock["habitat_name"].isin(dd["habitat_name"])]
+            if df_need.empty:
+                st.warning("No stock rows match your demand habitat names.")
+            else:
+                st.dataframe(df_need[["bank_id","habitat_name","quantity_available"]]
+                             .sort_values(["habitat_name","quantity_available"], ascending=[True, False]),
+                             use_container_width=True, hide_index=True)
+                if (df_need["quantity_available"] <= 0).all():
+                    st.warning("All matching stock for these habitats has zero quantity_available.")
 
-            rows2, removed_no_price = [], 0
-            for _, srow in cand.iterrows():
-                tier = tier_for_bank(
-                    srow.get("lpa_name",""), srow.get("nca_name",""),
-                    target_lpa_name or "", target_nca_name or "",
-                    lpa_neighbors, nca_neighbors,
+            # Candidate option preview (reusing same logic as optimiser)
+            st.subheader("Candidate options & tier capacity")
+            try:
+                size_preview = chosen_size
+                options_preview, _ = prepare_options(
+                    dd, size_preview,
+                    sstr(target_lpa_name), sstr(target_nca_name),
+                    [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
                     lpa_neighbors_norm, nca_neighbors_norm
                 )
-                pr = pricing_cs[(pricing_cs["bank_id"] == srow["bank_id"]) &
-                                (pricing_cs["habitat_name"] == srow["habitat_name"]) &
-                                (pricing_cs["tier"] == tier)]
-                if pr.empty:
-                    removed_no_price += 1
-                    continue
-                rows2.append({
-                    "bank_id": srow["bank_id"],
-                    "supply_habitat": srow["habitat_name"],
-                    "tier": tier,
-                    "unit_price": float(pr["price"].iloc[0]),
-                    "srm_mult": float(srm_map.get(tier, 0.5)),
-                    "stock_cap": float(srow.get("quantity_available",0) or 0.0),
-                    "companion_habitat": sstr(srow.get("companion_habitat")),
-                    "companion_ratio": float(srow.get("companion_ratio",0) or 0.0),
-                })
-            if removed_no_price:
-                reasons.append(f"- Dropped {removed_no_price} rows with no price for chosen size + tier.")
-            cand2 = pd.DataFrame(rows2)
-            if cand2.empty:
-                st.error("✖ All candidates dropped (pricing/tier mismatch).")
-                if reasons: st.caption("\n".join(reasons))
-                continue
-            before = len(cand2); cand2 = cand2[cand2["stock_cap"] > 0]
-            if len(cand2) < before:
-                reasons.append(f"- Removed {before-len(cand2)} rows with zero stock.")
-            if cand2.empty:
-                st.error("✖ No candidates have positive stock.")
-                if reasons: st.caption("\n".join(reasons))
-                continue
-
-            cand2["eff_from_primary"] = cand2["stock_cap"] * cand2["srm_mult"]
-            eff_cap = cand2["eff_from_primary"].sum()
-
-            st.write("**Tier breakdown of candidates kept:**")
-            st.dataframe(
-                cand2.groupby("tier", as_index=False).agg(
-                    options=("tier","count"),
-                    eff_capacity=("eff_from_primary","sum")
-                ),
-                use_container_width=True, hide_index=True
-            )
-            st.dataframe(cand2.sort_values(["unit_price","tier","bank_id"]),
-                         use_container_width=True, hide_index=True)
-
-            if reasons: st.caption("\n".join(reasons))
-            if eff_cap + 1e-9 < req:
-                st.error(f"✖ Insufficient effective capacity: need {req}, best-case {eff_cap:.3f}")
-            else:
-                st.success(f"✔ Effective capacity OK (need {req}, best-case {eff_cap:.3f})")
+                if not options_preview:
+                    st.error("No candidate options were generated (check prices/stock/rules).")
+                else:
+                    cand_df = pd.DataFrame(options_preview)
+                    cand_df["eff_from_primary"] = cand_df["stock_cap"] * cand_df["srm_mult"]
+                    st.dataframe(
+                        cand_df.groupby(["demand_habitat","tier"], as_index=False).agg(
+                            options=("tier","count"),
+                            eff_capacity=("eff_from_primary","sum")
+                        ).sort_values(["demand_habitat","tier"]),
+                        use_container_width=True, hide_index=True
+                    )
+            except Exception as inner:
+                st.warning(f"Preview build failed: {inner}")
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
+
 
 # --- Run optimiser ---
 if run:
     try:
-        demand_df = pd.read_csv(StringIO(demand_csv), header=None, names=["habitat_name","units_required"])
-        demand_df["habitat_name"] = demand_df["habitat_name"].map(sstr).map(normalise_hab)
-        demand_df["units_required"] = demand_df["units_required"].astype(float)
+        if demand_df.empty:
+            st.error("Add at least one demand row before optimising.")
+            st.stop()
 
+        # Validate against catalog names (selectbox already helps here)
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
         unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run]
         if unknown:
@@ -1022,6 +946,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
