@@ -561,10 +561,30 @@ def prepare_options(demand_df: pd.DataFrame,
                       .merge(Catalog, on="habitat_name", how="left")
 
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
-
-    # Enrich pricing with group & distinctiveness for proxy matching
+    
+    # ---- Build pricing_enriched that always has group & distinctiveness ----
+    # pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()   # you already have this line above
+    
     Catalog_cols = ["habitat_name", "broader_type", "distinctiveness_name"]
-    pricing_cs_enriched = pricing_cs.merge(Catalog[Catalog_cols], on="habitat_name", how="left", suffixes=("", "_cat"))
+    pc_join = pricing_cs.merge(
+        Catalog[Catalog_cols], on="habitat_name", how="left", suffixes=("", "_cat")
+    )
+    
+    # If Pricing provides its own broader_type/distinctiveness_name, prefer those; else use the catalog's
+    pc_join["broader_type_eff"] = pc_join["broader_type"].where(pc_join["broader_type"].astype(str).str.len() > 0,
+                                                               pc_join["broader_type_cat"])
+    pc_join["distinctiveness_name_eff"] = pc_join["distinctiveness_name"].where(
+        pc_join["distinctiveness_name"].astype(str).str.len() > 0,
+        pc_join["distinctiveness_name_cat"]
+    )
+    
+    # Normalise strings
+    for c in ["broader_type_eff", "distinctiveness_name_eff", "tier", "bank_id", "habitat_name"]:
+        if c in pc_join.columns:
+            pc_join[c] = pc_join[c].map(sstr)
+    
+    pricing_enriched = pc_join  # <- use this from now on
+
 
     # Trading index (still supported)
     trade_idx = {}
@@ -614,55 +634,65 @@ def prepare_options(demand_df: pd.DataFrame,
         key = sstr(name)
         return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
 
-    def find_price_for_supply(bank_id: str, supply_habitat: str, tier: str,
-                              demand_dist: str, supply_broader: str, supply_dist: str) -> Optional[Tuple[float, str, str]]:
+    def find_price_for_supply(bank_id: str,
+                              supply_habitat: str,
+                              tier: str,
+                              demand_broader: str,
+                              demand_dist: str) -> Optional[Tuple[float, str, str]]:
         """
         Returns (price, source_kind, price_habitat) or None.
-        source_kind: "exact" or "proxy"
-        price_habitat: the habitat_name row we priced from
+        source_kind: "exact" (exact habitat row) | "group-proxy" (group/distinctiveness row)
+        price_habitat: the habitat_name used to price (may be blank for pure group rows)
         """
-        # exact
-        pr_exact = pricing_cs[(pricing_cs["bank_id"] == bank_id) &
-                              (pricing_cs["habitat_name"] == supply_habitat) &
-                              (pricing_cs["tier"] == tier)]
+        # 0) Exact habitat price row (bank + tier + size)
+        pr_exact = pricing_enriched[(pricing_enriched["bank_id"] == bank_id) &
+                                    (pricing_enriched["tier"] == tier) &
+                                    (pricing_enriched["habitat_name"] == supply_habitat)]
         if not pr_exact.empty:
-            return float(pr_exact["price"].iloc[0]), "exact", supply_habitat
-
-        dkey = sstr(demand_dist).lower()
-        if dkey in ("high", "very high", "very_high", "very-high"):
+            r = pr_exact.sort_values("price").iloc[0]
+            return float(r["price"]), "exact", sstr(r["habitat_name"])
+    
+        # Numeric distinctiveness for comparisons
+        def dval(name: Optional[str]) -> float:
+            key = sstr(name)
+            return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
+    
+        d_key = sstr(demand_dist).lower()
+        d_val = dval(demand_dist)
+    
+        # 1) GROUP rows at this bank + tier + size
+        grp = pricing_enriched[(pricing_enriched["bank_id"] == bank_id) &
+                               (pricing_enriched["tier"] == tier)]
+        if grp.empty:
             return None
-
-        # same group & exact distinctiveness
-        pr1 = pricing_cs_enriched[(pricing_cs_enriched["bank_id"] == bank_id) &
-                                  (pricing_cs_enriched["tier"] == tier) &
-                                  (pricing_cs_enriched["broader_type"] == supply_broader) &
-                                  (pricing_cs_enriched["distinctiveness_name"] == supply_dist)]
-        if not pr1.empty:
-            r = pr1.sort_values("price").iloc[0]
-            return float(r["price"]), "proxy", sstr(r["habitat_name"])
-
-        # Medium: same group, higher distinctiveness
-        if dkey == "medium":
-            s_val = dval(supply_dist)
-            pr2 = pricing_cs_enriched[(pricing_cs_enriched["bank_id"] == bank_id) &
-                                      (pricing_cs_enriched["tier"] == tier) &
-                                      (pricing_cs_enriched["broader_type"] == supply_broader)]
-            if not pr2.empty:
-                pr2 = pr2.assign(_val=pr2["distinctiveness_name"].map(lambda nm: dval(sstr(nm))))
-                pr2 = pr2[pr2["_val"] > s_val]
-                if not pr2.empty:
-                    r = pr2.sort_values("price").iloc[0]
-                    return float(r["price"]), "proxy", sstr(r["habitat_name"])
-
-        # Low: any priced habitat in bank/tier
-        if dkey == "low":
-            pr3 = pricing_cs_enriched[(pricing_cs_enriched["bank_id"] == bank_id) &
-                                      (pricing_cs_enriched["tier"] == tier)]
-            if not pr3.empty:
-                r = pr3.sort_values("price").iloc[0]
-                return float(r["price"]), "proxy", sstr(r["habitat_name"])
-
+    
+        # Keep only rows with a known effective group/distinctiveness (from pricing or catalog)
+        grp = grp[(grp["broader_type_eff"].astype(str).str.len() > 0) &
+                  (grp["distinctiveness_name_eff"].astype(str).str.len() > 0)]
+        if grp.empty:
+            return None
+    
+        # Apply rules by demand distinctiveness
+        if d_key == "low":
+            # Low → any row, choose cheapest
+            r = grp.sort_values("price").iloc[0]
+            return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
+    
+        if d_key == "medium":
+            # Medium → same group AND distinctiveness >= Medium
+            grp = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
+            if grp.empty:
+                return None
+            grp["_dval"] = grp["distinctiveness_name_eff"].map(lambda nm: dval(nm))
+            grp = grp[grp["_dval"] >= d_val]  # >= Medium
+            if grp.empty:
+                return None
+            r = grp.sort_values("price").iloc[0]
+            return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
+    
+        # High / Very High → like-for-like only (must have exact habitat price row)
         return None
+
 
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
@@ -721,13 +751,13 @@ def prepare_options(demand_df: pd.DataFrame,
                 bank_id=s["bank_id"],
                 supply_habitat=s["habitat_name"],
                 tier=tier,
+                demand_broader=d_broader,
                 demand_dist=d_dist,
-                supply_broader=s.get("broader_type",""),
-                supply_dist=s.get("distinctiveness_name",""),
             )
             if not price_info:
                 continue
             unit_price, price_source, price_hab_used = price_info
+
 
             cap = float(s.get("quantity_available", 0) or 0.0)
             if cap <= 0:
