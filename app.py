@@ -1082,7 +1082,7 @@ def optimise(demand_df: pd.DataFrame,
             bank_capacity_total: Dict[str, float] = {b: 0.0 for b in bank_keys}
             for sid, cap in stock_caps.items():
                 bkey = stock_bank
-            key.get(sid, "")
+                key.get(sid, "")
                 if bkey in bank_capacity_total:
                     bank_capacity_total[bkey] += float(cap or 0.0)
 
