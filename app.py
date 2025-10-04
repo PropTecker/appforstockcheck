@@ -1791,7 +1791,7 @@ if run:
 # ================= Fixed Email Report Generation Function =================
 def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
                                        client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
-    """Generate the client-facing report table and email body matching exact template - NO INPUTS"""
+    """Generate the client-facing report table and email body matching exact template with improved styling"""
     
     # Separate by habitat types
     area_habitats = []
@@ -1858,33 +1858,33 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     total_with_admin = total_cost + admin_fee
     
-    # Build HTML table matching exact format
+    # Build HTML table with improved styling (30% narrower, better colors)
     html_table = """
-    <table border="1" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 11px;">
+    <table border="1" style="border-collapse: collapse; width: 70%; margin: 0 auto; font-family: Arial, sans-serif; font-size: 11px;">
         <thead>
-            <tr style="background-color: #f0f0f0;">
-                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Development Impact</th>
-                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Mitigation Supplied from Wild Capital</th>
+            <tr>
+                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Development Impact</th>
+                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
             </tr>
-            <tr style="background-color: #f8f8f8;">
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Lost</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Supplied</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Price Per Unit</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Offset Cost</th>
+            <tr>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Offset Cost</th>
             </tr>
         </thead>
         <tbody>
     """
     
-    # Add Area Habitats section
+    # Add Area Habitats section with light green background
     if area_habitats:
         html_table += """
-            <tr style="background-color: #e0e0e0;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Area Habitats</td>
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Area Habitats</td>
             </tr>
         """
         for habitat in area_habitats:
@@ -1901,11 +1901,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Hedgerow Habitats section
+    # Add Hedgerow Habitats section with light green background
     if hedgerow_habitats:
         html_table += """
-            <tr style="background-color: #e0e0e0;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Hedgerow Habitats</td>
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Hedgerow Habitats</td>
             </tr>
         """
         for habitat in hedgerow_habitats:
@@ -1922,11 +1922,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Watercourse Habitats section
+    # Add Watercourse Habitats section with light green background
     if watercourse_habitats:
         html_table += """
-            <tr style="background-color: #e0e0e0;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Watercourse Habitats</td>
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Watercourse Habitats</td>
             </tr>
         """
         for habitat in watercourse_habitats:
@@ -1945,8 +1945,8 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     # Add Spatial Risk Multiplier section (placeholder)
     html_table += """
-        <tr style="background-color: #e0e0e0;">
-            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Spatial Risk Multiplier</td>
+        <tr style="background-color: #90EE90;">
+            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
         </tr>
         <tr>
             <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
@@ -2050,147 +2050,94 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
-
-# Add this to your optimization results section (after the downloads):
-if (st.session_state.get("optimization_complete", False) and 
-    isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
-    not st.session_state["last_alloc_df"].empty):
-    
-    # Get data from session state
-    session_alloc_df = st.session_state["last_alloc_df"]
-    
-    # Reconstruct demand_df from session state
-    session_demand_df = pd.DataFrame(
-        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
-         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
-    )
-    
-    # Calculate total cost from session data
-    session_total_cost = session_alloc_df["cost"].sum()
-    
-    st.markdown("---")
-    st.markdown("#### 📧 Client Report Generation")
-    
-    # Initialize email inputs in session state (only if not exists)
-    if "email_client_name" not in st.session_state:
-        st.session_state.email_client_name = "INSERT NAME"
-    if "email_ref_number" not in st.session_state:
-        st.session_state.email_ref_number = "BNG00XXX"
-    if "email_location" not in st.session_state:
-        st.session_state.email_location = "INSERT LOCATION"
-    
-    with st.expander("Generate Client Email Report", expanded=False):
-        st.markdown("**Generate a client-facing report table and email:**")
-        
-        # ========== FIXED INPUTS - NO CALLBACKS ==========
-        st.markdown("**📝 Email Details:**")
-
-        with st.form("client_email_form", clear_on_submit=False):
-            col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
-            
-            with col_input1:
-                form_client_name = st.text_input(
-                    "Client Name", 
-                    value=st.session_state.email_client_name,
-                    key="form_client_name"
-                )
-            
-            with col_input2:
-                form_ref_number = st.text_input(
-                    "Reference Number", 
-                    value=st.session_state.email_ref_number,
-                    key="form_ref_number"
-                )
-            
-            with col_input3:
-                form_location = st.text_input(
-                    "Development Location", 
-                    value=st.session_state.email_location,
-                    key="form_location"
-                )
-            
-            # Form submit button
-            form_submitted = st.form_submit_button("Update Email Details")
-            
-            # Only update session state when form is submitted
-            if form_submitted:
-                st.session_state.email_client_name = form_client_name
-                st.session_state.email_ref_number = form_ref_number
-                st.session_state.email_location = form_location
-                st.success("Email details updated!")
-        
-        # Use the session state values for generating the report
-        client_name = st.session_state.email_client_name
-        ref_number = st.session_state.email_ref_number
-        location = st.session_state.email_location    
-        
-        # Generate the report using session data and input values
-        client_table, email_html = generate_client_report_table_fixed(
-            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-            client_name, ref_number, location
-        )
-        
-        # Display the table
-        st.markdown("**Client Report Table:**")
-        
-        # Format for display (clean up column names)
-        if not client_table.empty:
-            display_table = client_table.copy()
-            display_table = display_table.rename(columns={
-                "Distinctiveness_Supply": "Supply Distinctiveness",
-                "# Units_Supply": "Supply Units"
-            })
-            
-            # Remove empty development impact columns for display
-            cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
-                           "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
-                           "Price Per Unit", "Offset Cost"]
-            
-            st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
         
         # Email generation
-        st.markdown("**📧 Email Generation:**")
+        # Enhanced email generation with .eml file creation:
+    st.markdown("**📧 Email Generation:**")
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
+            st.code(email_html, language="html")
+            st.success("Email HTML generated! Copy the code above and paste into your email client.")
+    
+    with col2:
+        # Create .eml file content
+        import base64
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
         
-        col1, col2 = st.columns([1, 1])
+        subject = f"BNG Quote {ref_number} - {location}"
+        total_with_admin = session_total_cost + ADMIN_FEE_GBP
         
-        with col1:
-            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-                st.code(email_html, language="html")
-                st.success("Email HTML generated! Copy the code above and paste into your email client.")
+        # Create email message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+        msg['To'] = ''  # Will be filled by user
         
-        with col2:
-            subject = f"BNG Quote {ref_number} - {location}"
-            total_with_admin = session_total_cost + ADMIN_FEE_GBP
-            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+        # Create text version for email clients that don't support HTML
+        text_body = f"""Dear {client_name}
+    
+    Our Ref: {ref_number}
+    
+    Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+    
+    Thank you for enquiring about BNG Units for your development in {location}
+    
+    About Us
+    
+    Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
+    
+    Your Quote - £{total_with_admin:,.0f} + VAT
+    
+    [Please view the HTML version of this email for the detailed pricing breakdown table]
+    
+    Total Units Required: {session_demand_df['units_required'].sum():.2f}
+    Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
+    Total Cost: £{total_with_admin:,.0f} + VAT
+    
+    Next Steps
+    BNG is a pre-commencement, not a pre-planning, condition.
+    
+    To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+    
+    If you have any questions, please reply to this email or call 01962 436574.
+    
+    Best regards,
+    Wild Capital Team"""
+        
+        # Attach text and HTML versions
+        text_part = MIMEText(text_body, 'plain')
+        html_part = MIMEText(email_html, 'html')
+        
+        msg.attach(text_part)
+            msg.attach(html_part)
             
-            mailto_link = f"mailto:?subject={subject}&body={simple_body}"
-            st.markdown(f"[📧 Open Email Client]({mailto_link})")
-        
-        # Download options
-        st.markdown("**📥 Download Options:**")
-        
-        col3, col4 = st.columns([1, 1])
+            # Convert to string
+            eml_content = msg.as_string()
+            
+            # Download button for .eml file
+            st.download_button(
+                "📧 Download Email (.eml)",
+                data=eml_content,
+                file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+                mime="message/rfc822",
+                help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+            )
         
         with col3:
-            if not client_table.empty:
-                csv_data = display_table[cols_to_show].to_csv(index=False)
-                st.download_button(
-                    "Download Client Table (CSV)",
-                    data=csv_data,
-                    file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    key="download_client_table_csv"
-                )
-        
-        with col4:
-            st.download_button(
-                "Download Email HTML",
-                data=email_html,
-                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
-                mime="text/html",
-                key="download_email_html"
-            )
+            # Simple mailto fallback
+            import urllib.parse
             
+            encoded_subject = urllib.parse.quote(subject)
+            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+            encoded_simple = urllib.parse.quote(simple_body)
+            
+            mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
+            st.markdown(f"[📧 Quick Email]({mailto_link})")
+                        
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
@@ -2214,6 +2161,13 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
+
+
+
+
+
+
+
 
 
 
