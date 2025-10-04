@@ -2051,32 +2051,54 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     
     return report_df, email_body
 
-# Email generation section
-st.markdown("**📧 Email Generation:**")
-
-col1, col2, col3 = st.columns([1, 1, 1])
-
-with col1:
-    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-        st.code(email_html, language="html")
-        st.success("Email HTML generated! Copy the code above and paste into your email client.")
-
-with col2:
-    # Create .eml file content
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
+# Email generation section - ONLY runs if optimization is complete
+if (st.session_state.get("optimization_complete", False) and 
+    isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
+    not st.session_state["last_alloc_df"].empty):
     
-    subject = f"BNG Quote {ref_number} - {location}"
-    total_with_admin = session_total_cost + ADMIN_FEE_GBP
+    # Use the current values from session state
+    client_name = st.session_state.email_client_name
+    ref_number = st.session_state.email_ref_number
+    location = st.session_state.email_location
+    session_alloc_df = st.session_state["last_alloc_df"]
+    session_demand_df = pd.DataFrame(
+        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
+         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
+    )
+    session_total_cost = session_alloc_df["cost"].sum()
     
-    # Create email message
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
-    msg['To'] = ''  # Will be filled by user
+    # Generate the report
+    client_table, email_html = generate_client_report_table_fixed(
+        session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
+        client_name, ref_number, location
+    )
     
-    # Create text version for email clients that don't support HTML
-    text_body = f"""Dear {client_name}
+    # Email generation
+    st.markdown("**📧 Email Generation:**")
+    
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
+            st.code(email_html, language="html")
+            st.success("Email HTML generated! Copy the code above and paste into your email client.")
+    
+    with col2:
+        # Create .eml file content
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        
+        subject = f"BNG Quote {ref_number} - {location}"
+        total_with_admin = session_total_cost + ADMIN_FEE_GBP
+        
+        # Create email message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+        msg['To'] = ''  # Will be filled by user
+        
+        # Create text version for email clients that don't support HTML
+        text_body = f"""Dear {client_name}
 
 Our Ref: {ref_number}
 
@@ -2105,36 +2127,36 @@ If you have any questions, please reply to this email or call 01962 436574.
 
 Best regards,
 Wild Capital Team"""
+        
+        # Attach text and HTML versions
+        text_part = MIMEText(text_body, 'plain')
+        html_part = MIMEText(email_html, 'html')
+        
+        msg.attach(text_part)
+        msg.attach(html_part)
+        
+        # Convert to string
+        eml_content = msg.as_string()
+        
+        # Download button for .eml file
+        st.download_button(
+            "📧 Download Email (.eml)",
+            data=eml_content,
+            file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+            mime="message/rfc822",
+            help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+        )
     
-    # Attach text and HTML versions
-    text_part = MIMEText(text_body, 'plain')
-    html_part = MIMEText(email_html, 'html')
-    
-    msg.attach(text_part)
-    msg.attach(html_part)
-    
-    # Convert to string
-    eml_content = msg.as_string()
-    
-    # Download button for .eml file
-    st.download_button(
-        "📧 Download Email (.eml)",
-        data=eml_content,
-        file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-        mime="message/rfc822",
-        help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-    )
-
-with col3:
-    # Simple mailto fallback
-    import urllib.parse
-    
-    encoded_subject = urllib.parse.quote(subject)
-    simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
-    encoded_simple = urllib.parse.quote(simple_body)
-    
-    mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
-    st.markdown(f"[📧 Quick Email]({mailto_link})")
+    with col3:
+        # Simple mailto fallback
+        import urllib.parse
+        
+        encoded_subject = urllib.parse.quote(subject)
+        simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+        encoded_simple = urllib.parse.quote(simple_body)
+        
+        mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
+        st.markdown(f"[📧 Quick Email]({mailto_link})")
                         
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
