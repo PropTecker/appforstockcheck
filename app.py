@@ -2107,10 +2107,10 @@ if (st.session_state.get("optimization_complete", False) and
                 key="email_location_input"
             )
 
-# Update session state with current values (no conditional logic)
-st.session_state.email_client_name = client_name
-st.session_state.email_ref_number = ref_number  
-st.session_state.email_location = location
+        # Update session state with current values (no conditional logic)
+        st.session_state.email_client_name = client_name
+        st.session_state.email_ref_number = ref_number  
+        st.session_state.email_location = location
         
         # Use the current values (either from session state or just entered)
         client_name = st.session_state.email_client_name
