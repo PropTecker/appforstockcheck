@@ -2052,6 +2052,7 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     return report_df, email_body
 
 # Add this to your optimization results section (after the downloads):
+# Add this to your optimization results section (after the downloads):
 if (st.session_state.get("optimization_complete", False) and 
     isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
     not st.session_state["last_alloc_df"].empty):
@@ -2071,24 +2072,52 @@ if (st.session_state.get("optimization_complete", False) and
     st.markdown("---")
     st.markdown("#### 📧 Client Report Generation")
     
+    # Initialize email inputs in session state
+    if "email_client_name" not in st.session_state:
+        st.session_state.email_client_name = "INSERT NAME"
+    if "email_ref_number" not in st.session_state:
+        st.session_state.email_ref_number = "BNG00XXX"
+    if "email_location" not in st.session_state:
+        st.session_state.email_location = "INSERT LOCATION"
+    
     with st.expander("Generate Client Email Report", expanded=False):
         st.markdown("**Generate a client-facing report table and email:**")
         
-        # ========== INPUTS MOVED OUTSIDE FUNCTION ==========
+        # ========== INPUTS WITH SESSION STATE ==========
         st.markdown("**📝 Email Details:**")
         col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
         
         with col_input1:
-            client_name = st.text_input("Client Name", value="INSERT NAME", key="email_client_name_input")
+            client_name = st.text_input(
+                "Client Name", 
+                value=st.session_state.email_client_name, 
+                key="email_client_name_widget",
+                on_change=lambda: setattr(st.session_state, 'email_client_name', st.session_state.email_client_name_widget)
+            )
         with col_input2:
-            ref_number = st.text_input("Reference Number", value="BNG00XXX", key="email_ref_number_input")
+            ref_number = st.text_input(
+                "Reference Number", 
+                value=st.session_state.email_ref_number, 
+                key="email_ref_number_widget",
+                on_change=lambda: setattr(st.session_state, 'email_ref_number', st.session_state.email_ref_number_widget)
+            )
         with col_input3:
-            location = st.text_input("Development Location", value="INSERT LOCATION", key="email_location_input")
+            location = st.text_input(
+                "Development Location", 
+                value=st.session_state.email_location, 
+                key="email_location_widget",
+                on_change=lambda: setattr(st.session_state, 'email_location', st.session_state.email_location_widget)
+            )
         
-        # *** MAKE SURE THIS CALLS THE _FIXED VERSION ***
+        # Use session state values for generation
+        client_name = st.session_state.email_client_name
+        ref_number = st.session_state.email_ref_number
+        location = st.session_state.email_location
+        
+        # Generate the report using session data and input values
         client_table, email_html = generate_client_report_table_fixed(
             session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-            client_name, ref_number, location  # Pass the input values
+            client_name, ref_number, location
         )
         
         # Display the table
@@ -2151,7 +2180,6 @@ if (st.session_state.get("optimization_complete", False) and
                 mime="text/html",
                 key="download_email_html"
             )
-        
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
