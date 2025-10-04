@@ -2172,7 +2172,7 @@ if (st.session_state.get("optimization_complete", False) and
     col1, col2, col3 = st.columns([1, 1, 1])
 
     
-    with col2:
+    with col1:
         # Create .eml file content
         from email.mime.multipart import MIMEMultipart
         from email.mime.text import MIMEText
