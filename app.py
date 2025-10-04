@@ -206,6 +206,19 @@ def get_lpa_nca_for_point(lat: float, lon: float) -> Tuple[str, str]:
     nca = sstr((arcgis_point_query(NCA_URL, lat, lon, "NCA_Name").get("attributes") or {}).get("NCA_Name"))
     return lpa, nca
 
+def get_catchment_geo_for_point(lat: float, lon: float) -> Tuple[str, Optional[Dict[str, Any]], str, Optional[Dict[str, Any]]]:
+    """
+    Returns (lpa_name, lpa_geojson, nca_name, nca_geojson) for a given point.
+    """
+    lpa_feat = arcgis_point_query(LPA_URL, lat, lon, "LAD24NM")
+    nca_feat = arcgis_point_query(NCA_URL, lat, lon, "NCA_Name")
+    lpa_name = sstr((lpa_feat.get("attributes") or {}).get("LAD24NM"))
+    nca_name = sstr((nca_feat.get("attributes") or {}).get("NCA_Name"))
+    lpa_gj = esri_polygon_to_geojson(lpa_feat.get("geometry"))
+    nca_gj = esri_polygon_to_geojson(nca_feat.get("geometry"))
+    return lpa_name, lpa_gj, nca_name, nca_gj
+
+
 # ========= Tiering =========
 def tier_for_bank(bank_lpa: str, bank_nca: str,
                   t_lpa: str, t_nca: str,
@@ -1298,6 +1311,37 @@ if run:
                     if not latlon:
                         continue
                     lat_b, lon_b = latlon
+                    # --- Draw the bank's catchment perimeters (LPA & NCA) ---
+                    bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
+                    cache_key = sstr(bkey)
+            
+                    if cache_key not in bank_catch_cache:
+                        try:
+                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                            bank_catch_cache[cache_key] = {
+                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                            }
+                        except Exception as _e:
+                            bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+            
+                    bgeo = bank_catch_cache[cache_key]
+                    # Use distinct colours from the target site (target uses red/yellow)
+                    add_geojson_layer(
+                        fmap,
+                        bgeo.get("lpa_gj"),
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                        color="green",  # bank LPA perimeter
+                        weight=2, fill_opacity=0.03
+                    )
+                    add_geojson_layer(
+                        fmap,
+                        bgeo.get("nca_gj"),
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                        color="blue",   # bank NCA perimeter
+                        weight=3, fill_opacity=0.03
+                    )
+
                     popup_lines = []
                     total_units_b = g["units_supplied"].sum()
                     total_cost_b = g["cost"].sum()
