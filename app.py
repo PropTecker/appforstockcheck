@@ -1785,11 +1785,17 @@ if run:
         st.error(f"Optimiser error: {e}")
 
 # ================= Email Report Generation =================
+# ================= Email Report Generation (EXACT TEMPLATE MATCH) =================
 def generate_client_report_table(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float) -> Tuple[pd.DataFrame, str]:
-    """Generate the client-facing report table and email body"""
+    """Generate the client-facing report table and email body matching exact template"""
     
     # Create the client report table
     report_rows = []
+    
+    # Separate by habitat types
+    area_habitats = []
+    hedgerow_habitats = []
+    watercourse_habitats = []
     
     # Process each demand
     for _, demand_row in demand_df.iterrows():
@@ -1805,7 +1811,7 @@ def generate_client_report_table(alloc_df: pd.DataFrame, demand_df: pd.DataFrame
         for _, alloc_row in matching_allocs.iterrows():
             # Determine demand distinctiveness
             if demand_habitat == NET_GAIN_LABEL:
-                demand_distinctiveness = "Low + 10% Net Gain"
+                demand_distinctiveness = "10% Net Gain"
                 demand_habitat_display = "Any"
             else:
                 # Look up from catalog
@@ -1830,235 +1836,228 @@ def generate_client_report_table(alloc_df: pd.DataFrame, demand_df: pd.DataFrame
             else:
                 supply_distinctiveness = "Medium"  # Default
             
-            report_rows.append({
-                "Development Impact": "",
+            row_data = {
                 "Distinctiveness": demand_distinctiveness,
                 "Habitats Lost": demand_habitat_display,
                 "# Units": f"{demand_units:.2f}",
-                "Mitigation Supplied from Wild Capital": "",
                 "Distinctiveness_Supply": supply_distinctiveness,
                 "Habitats Supplied": supply_habitat,
                 "# Units_Supply": f"{supply_units:.2f}",
                 "Price Per Unit": f"£{unit_price:,.0f}",
                 "Offset Cost": f"£{offset_cost:,.0f}"
-            })
+            }
+            
+            # Categorize by habitat type (for now, assume all are area habitats unless specified)
+            if "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
+                hedgerow_habitats.append(row_data)
+            elif "watercourse" in demand_habitat.lower() or "water" in supply_habitat.lower():
+                watercourse_habitats.append(row_data)
+            else:
+                area_habitats.append(row_data)
     
-    # Add admin fee row
-    report_rows.append({
-        "Development Impact": "",
-        "Distinctiveness": "",
-        "Habitats Lost": "",
-        "# Units": "",
-        "Mitigation Supplied from Wild Capital": "",
-        "Distinctiveness_Supply": "",
-        "Habitats Supplied": "Planning Discharge Pack",
-        "# Units_Supply": "",
-        "Price Per Unit": "",
-        "Offset Cost": f"£{admin_fee:,.0f}"
-    })
+    # Get current date and user info
+    current_date = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+    current_user = "PropTecker"  # You can make this dynamic
     
-    # Add total row
-    total_demand_units = demand_df["units_required"].sum()
-    total_supply_units = alloc_df["units_supplied"].sum()
-    grand_total = total_cost + admin_fee
+    # Email inputs
+    client_name = st.text_input("Client Name", value="INSERT NAME", key="client_name_email")
+    ref_number = st.text_input("Reference Number", value="BNG00XXX", key="ref_number_email")
+    location = st.text_input("Development Location", value="INSERT LOCATION", key="location_email")
     
-    report_rows.append({
-        "Development Impact": "",
-        "Distinctiveness": "Total",
-        "Habitats Lost": "",
-        "# Units": f"{total_demand_units:.2f}",
-        "Mitigation Supplied from Wild Capital": "",
-        "Distinctiveness_Supply": "",
-        "Habitats Supplied": "",
-        "# Units_Supply": f"{total_supply_units:.2f}",
-        "Price Per Unit": "",
-        "Offset Cost": f"£{grand_total:,.0f}"
-    })
+    total_with_admin = total_cost + admin_fee
     
-    report_df = pd.DataFrame(report_rows)
-    
-    # Generate email body
-    project_name = st.text_input("Project Name (for email)", value="[Project Name]", key="project_name_email")
-    client_name = st.text_input("Client Name", value="[Client Name]", key="client_name_email")
-    
-    # Create table for email (HTML format)
+    # Build HTML table matching exact format
     html_table = """
-    <table border="1" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px;">
+    <table border="1" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 11px;">
         <thead>
             <tr style="background-color: #f0f0f0;">
-                <th colspan="4" style="text-align: center; padding: 8px; border: 1px solid #ccc;">Development Impact</th>
-                <th colspan="6" style="text-align: center; padding: 8px; border: 1px solid #ccc;">Mitigation Supplied from Wild Capital</th>
+                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Development Impact</th>
+                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Mitigation Supplied from Wild Capital</th>
             </tr>
             <tr style="background-color: #f8f8f8;">
-                <th style="padding: 6px; border: 1px solid #ccc;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #ccc;">Habitats Lost</th>
-                <th style="padding: 6px; border: 1px solid #ccc;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #ccc;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #ccc;">Habitats Supplied</th>
-                <th style="padding: 6px; border: 1px solid #ccc;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #ccc;">Price Per Unit</th>
-                <th style="padding: 6px; border: 1px solid #ccc;">Offset Cost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Offset Cost</th>
             </tr>
         </thead>
         <tbody>
     """
     
-    # Add data rows
-    for _, row in report_df[:-1].iterrows():  # Exclude total row for now
-        if row["Habitats Supplied"] == "Planning Discharge Pack":
-            html_table += f"""
-            <tr>
-                <td colspan="7" style="padding: 6px; border: 1px solid #ccc; text-align: right; font-weight: bold;">Planning Discharge Pack</td>
-                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["Offset Cost"]}</td>
+    # Add Area Habitats section
+    if area_habitats:
+        html_table += """
+            <tr style="background-color: #e0e0e0;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Area Habitats</td>
             </tr>
-            """
-        else:
+        """
+        for habitat in area_habitats:
             html_table += f"""
             <tr>
-                <td style="padding: 6px; border: 1px solid #ccc;">{row["Distinctiveness"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc;">{row["Habitats Lost"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["# Units"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc;">{row["Distinctiveness_Supply"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc;">{row["Habitats Supplied"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["# Units_Supply"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["Price Per Unit"]}</td>
-                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["Offset Cost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
             </tr>
             """
     
-    # Add total row
-    total_row = report_df.iloc[-1]
+    # Add Hedgerow Habitats section
+    if hedgerow_habitats:
+        html_table += """
+            <tr style="background-color: #e0e0e0;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Hedgerow Habitats</td>
+            </tr>
+        """
+        for habitat in hedgerow_habitats:
+            html_table += f"""
+            <tr>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
+            </tr>
+            """
+    
+    # Add Watercourse Habitats section
+    if watercourse_habitats:
+        html_table += """
+            <tr style="background-color: #e0e0e0;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Watercourse Habitats</td>
+            </tr>
+        """
+        for habitat in watercourse_habitats:
+            html_table += f"""
+            <tr>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
+            </tr>
+            """
+    
+    # Add Spatial Risk Multiplier section (placeholder)
+    html_table += """
+        <tr style="background-color: #e0e0e0;">
+            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Spatial Risk Multiplier</td>
+        </tr>
+        <tr>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+        </tr>
+        <tr>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Hedgerow Habitats</td>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+        </tr>
+        <tr>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Watercourse Habitats</td>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+        </tr>
+    """
+    
+    # Add Planning Discharge Pack and Total
     html_table += f"""
+        <tr>
+            <td colspan="7" style="padding: 6px; border: 1px solid #000; text-align: right; font-weight: bold;">Planning Discharge Pack</td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{admin_fee:,.0f}</td>
+        </tr>
         <tr style="background-color: #f0f0f0; font-weight: bold;">
-            <td style="padding: 6px; border: 1px solid #ccc;">Total</td>
-            <td style="padding: 6px; border: 1px solid #ccc;"></td>
-            <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{total_row["# Units"]}</td>
-            <td style="padding: 6px; border: 1px solid #ccc;"></td>
-            <td style="padding: 6px; border: 1px solid #ccc;"></td>
-            <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{total_row["# Units_Supply"]}</td>
-            <td style="padding: 6px; border: 1px solid #ccc;"></td>
-            <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{total_row["Offset Cost"]}</td>
+            <td style="padding: 6px; border: 1px solid #000;">Total</td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{demand_df['units_required'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{alloc_df['units_supplied'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{total_with_admin:,.0f}</td>
         </tr>
     </tbody>
     </table>
     """
     
-    # Email body
+    # Determine next steps based on amount (programmatic ending)
+    if total_with_admin < 10000:
+        next_steps = """<strong>Next Steps</strong>
+<br><br>
+BNG is a pre-commencement, not a pre-planning, condition.
+<br><br>
+To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+<br><br>
+Once you sign the agreement, pay the settlement fee and provide us with your metric and decision notice we will allocate the units to you.
+<br><br>
+If you have any questions, please reply to this email or call 01962 436574."""
+    else:
+        next_steps = """<strong>Next Steps</strong>
+<br><br>
+BNG is a pre-commencement, not a pre-planning, condition.
+<br><br>
+To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+<br><br>
+We offer two contract options:
+<br><br>
+1. <strong>Buy It Now:</strong> Pay in full on signing; units allocated immediately.<br>
+2. <strong>Reservation & Purchase:</strong> Pay a reservation fee to hold units for up to 6 months, with the option to draw them down anytime in that period.
+<br><br>
+If you have any questions, please reply to this email or call 01962 436574."""
+    
+    # Generate full email body matching exact template
     email_body = f"""
-Subject: Biodiversity Net Gain Offset Proposal - {project_name}
+<div style="font-family: Arial, sans-serif; font-size: 12px; line-height: 1.4;">
 
-Dear {client_name},
-
-Thank you for your inquiry regarding biodiversity net gain offsets for {project_name}. Please find below our proposal for the required habitat mitigation:
+<strong>Dear {client_name}</strong>
+<br><br>
+<strong>Our Ref: {ref_number}</strong>
+<br><br>
+Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+<br><br>
+Thank you for enquiring about BNG Units for your development in {location}
+<br><br>
+<strong>About Us</strong>
+<br><br>
+Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance. We create and manage a large portfolio of nature recovery projects, owning the freehold to all mitigation land for the highest integrity and long-term assurance.
+<br><br>
+Our key advantages:
+<br><br>
+1. <strong>Permanent Nature Recovery:</strong> We dedicate all land to conservation in perpetuity, not just for the 30-year minimum.<br>
+2. <strong>Independently Managed Endowment:</strong> Long-term management funds are fully insured and overseen by independent asset managers.<br>
+3. <strong>Independent Governance:</strong> Leading third-party ecologists and contractors oversee all monitoring and habitat management, ensuring objectivity.<br>
+4. <strong>Full Ownership and Responsibility:</strong> We hold the freehold and assume complete responsibility for all delivery and management - no ambiguity.
+<br><br>
+<strong>Your Quote - £{total_with_admin:,.0f} + VAT</strong>
+<br><br>
+See a detailed breakdown of the pricing below. I've attached a PDF outlining the BNG offset and condition discharge process. If you have any questions, please let us know—we're here to help.
+<br><br>
 
 {html_table}
 
 <br><br>
-<strong>Key Points:</strong>
-<ul>
-    <li>All habitat units are sourced from our verified biodiversity sites</li>
-    <li>Offset delivery meets the requirements of the Environment Act 2021</li>
-    <li>Planning discharge pack includes all necessary documentation for your LPA submission</li>
-    <li>Price valid for 30 days from date of quote</li>
-</ul>
-
-<br>
-<strong>Next Steps:</strong>
-<br>
-If you would like to proceed with this proposal, please confirm your acceptance and we will prepare the formal agreement and arrange site surveys as required.
-
+Prices exclude VAT. Any legal costs for contract amendments will be charged to the client and must be paid before allocation.
 <br><br>
-Best regards,<br>
-Wild Capital Team<br>
-[Your contact details]
+{next_steps}
 
-<br><br>
-<em>This quote was generated automatically by the BNG Optimiser system on {pd.Timestamp.now().strftime('%d/%m/%Y at %H:%M')}.</em>
+</div>
     """
     
-    return report_df, email_body
-
-# Add this to your optimization results section (after the downloads):
-if 'alloc_df' in locals() and not alloc_df.empty:
-    st.markdown("---")
-    st.markdown("#### 📧 Client Report Generation")
+    # Create simplified dataframe for display
+    all_habitats = area_habitats + hedgerow_habitats + watercourse_habitats
+    report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
-    with st.expander("Generate Client Email Report", expanded=False):
-        st.markdown("**Generate a client-facing report table and email:**")
-        
-        # Generate the report
-        client_table, email_html = generate_client_report_table(alloc_df, demand_df, total_cost, ADMIN_FEE_GBP)
-        
-        # Display the table
-        st.markdown("**Client Report Table:**")
-        
-        # Format for display (clean up column names)
-        display_table = client_table.copy()
-        display_table = display_table.rename(columns={
-            "Distinctiveness_Supply": "Supply Distinctiveness",
-            "# Units_Supply": "Supply Units"
-        })
-        
-        # Remove empty development impact columns for display
-        cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
-                       "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
-                       "Price Per Unit", "Offset Cost"]
-        
-        st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
-        
-        # Email generation
-        st.markdown("**📧 Email Generation:**")
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            if st.button("📋 Copy Email to Clipboard", help="Copy the email HTML to clipboard"):
-                st.code(email_html, language="html")
-                st.success("Email HTML generated! Copy the code above and paste into your email client.")
-        
-        with col2:
-            # Create mailto link
-            project_name = st.session_state.get("project_name_email", "[Project Name]")
-            subject = f"Biodiversity Net Gain Offset Proposal - {project_name}"
-            
-            # Create simplified email body for mailto (HTML doesn't work well in mailto)
-            simple_table = "BIODIVERSITY NET GAIN OFFSET PROPOSAL\n\n"
-            for _, row in client_table[:-1].iterrows():
-                if row["Habitats Supplied"] == "Planning Discharge Pack":
-                    simple_table += f"Planning Discharge Pack: {row['Offset Cost']}\n"
-                else:
-                    simple_table += f"{row['Distinctiveness']} {row['Habitats Lost']} ({row['# Units']} units) -> {row['Distinctiveness_Supply']} {row['Habitats Supplied']} ({row['# Units_Supply']} units) @ {row['Price Per Unit']} = {row['Offset Cost']}\n"
-            
-            total_row = client_table.iloc[-1]
-            simple_table += f"\nTOTAL: {total_row['# Units']} units required -> {total_row['# Units_Supply']} units supplied = {total_row['Offset Cost']}"
-            
-            mailto_link = f"mailto:?subject={subject}&body={simple_table}"
-            
-            st.markdown(f"[📧 Open Email Client]({mailto_link})")
-        
-        # Download options
-        st.markdown("**📥 Download Options:**")
-        
-        col3, col4 = st.columns([1, 1])
-        
-        with col3:
-            # Download as CSV
-            csv_data = display_table[cols_to_show].to_csv(index=False)
-            st.download_button(
-                "Download Client Table (CSV)",
-                data=csv_data,
-                file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-        
-        with col4:
-            # Download email HTML
-            st.download_button(
-                "Download Email HTML",
-                data=email_html,
-                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
-                mime="text/html"
-            )
+    return report_df, email_body
         
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
