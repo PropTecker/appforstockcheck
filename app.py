@@ -536,7 +536,7 @@ if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         f"NCA: **{st.session_state['target_nca_name'] or '—'}**"
     )
 
-# ================= Map functions (FIXED VERSION) =================
+# ================= Map functions (CORRECTED STYLING) =================
 def build_base_map():
     lat = st.session_state.get("target_lat", None)
     lon = st.session_state.get("target_lon", None)
@@ -550,25 +550,32 @@ def build_base_map():
     else:
         fmap = folium.Map(location=[lat, lon], zoom_start=10, control_scale=True)
         
-        # Add target LPA/NCA boundaries
+        # Target LPA - Bright Red border
         if lpa_gj:
             folium.GeoJson(
                 lpa_gj,
                 name=f"🎯 Target LPA: {t_lpa}" if t_lpa else "Target LPA",
                 style_function=lambda x: {
-                    "fillColor": "red", "color": "red", "weight": 3, 
-                    "fillOpacity": 0.1, "opacity": 0.8
+                    "fillColor": "red", 
+                    "color": "red",  # Bright red border
+                    "weight": 3, 
+                    "fillOpacity": 0.05,  # Very light fill
+                    "opacity": 1.0  # Solid border
                 },
                 tooltip=f"Target LPA: {t_lpa}" if t_lpa else "Target LPA"
             ).add_to(fmap)
         
+        # Target NCA - Bright Orange border
         if nca_gj:
             folium.GeoJson(
                 nca_gj,
                 name=f"🎯 Target NCA: {t_nca}" if t_nca else "Target NCA",
                 style_function=lambda x: {
-                    "fillColor": "orange", "color": "orange", "weight": 2, 
-                    "fillOpacity": 0.05, "opacity": 0.6
+                    "fillColor": "orange", 
+                    "color": "orange",  # Bright orange border
+                    "weight": 3, 
+                    "fillOpacity": 0.05,  # Very light fill
+                    "opacity": 1.0  # Solid border
                 },
                 tooltip=f"Target NCA: {t_nca}" if t_nca else "Target NCA"
             ).add_to(fmap)
@@ -587,7 +594,7 @@ def build_base_map():
     return fmap
 
 def build_results_map(alloc_df: pd.DataFrame):
-    # Start with base map
+    # Start with base map (includes target LPA/NCA)
     fmap = build_base_map()
     lat0 = st.session_state.get("target_lat", None)
     lon0 = st.session_state.get("target_lon", None)
@@ -606,7 +613,6 @@ def build_results_map(alloc_df: pd.DataFrame):
 
     # Process each selected bank
     bank_groups = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
-    bank_colors = ["green", "blue", "purple", "darkgreen", "darkblue"]
     
     for idx, ((bkey, bname), g) in enumerate(bank_groups):
         try:
@@ -616,50 +622,49 @@ def build_results_map(alloc_df: pd.DataFrame):
                 continue
                 
             lat_b, lon_b = latlon
-            bank_color = bank_colors[idx % len(bank_colors)]
             
             # Ensure we have catchment data
             cache_key = sstr(bkey)
             if cache_key not in st.session_state["bank_catchment_geo"]:
-                try:
-                    b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                    st.session_state["bank_catchment_geo"][cache_key] = {
-                        "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                        "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                    }
-                except Exception:
-                    st.session_state["bank_catchment_geo"][cache_key] = {
-                        "lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None
-                    }
+                continue  # Skip if no catchment data
 
             bgeo = st.session_state["bank_catchment_geo"][cache_key]
             bank_display_name = sstr(bname) or sstr(bkey)
             
-            # Add bank LPA boundary
+            # Add COMBINED bank boundary (LPA + NCA as one dotted green border)
+            # First add the LPA
             if bgeo.get("lpa_gj"):
                 folium.GeoJson(
                     bgeo["lpa_gj"],
-                    name=f"🏢 {bank_display_name} - LPA",
-                    style_function=lambda x, color=bank_color: {
-                        "fillColor": color, "color": color, "weight": 2, 
-                        "fillOpacity": 0.2, "opacity": 0.8, "dashArray": "5,5"
+                    name=f"🏢 {bank_display_name} - Catchment Area",
+                    style_function=lambda x: {
+                        "fillColor": "green", 
+                        "color": "green",  # Green border
+                        "weight": 2, 
+                        "fillOpacity": 0.1,  # Light green fill
+                        "opacity": 0.8,
+                        "dashArray": "5,5"  # Dotted border
                     },
-                    tooltip=f"Bank LPA: {sstr(bgeo.get('lpa_name', 'Unknown'))}"
+                    tooltip=f"Bank: {bank_display_name} - LPA: {sstr(bgeo.get('lpa_name', 'Unknown'))}"
                 ).add_to(fmap)
             
-            # Add bank NCA boundary  
+            # Then add the NCA with same styling to create unified appearance
             if bgeo.get("nca_gj"):
                 folium.GeoJson(
                     bgeo["nca_gj"],
-                    name=f"🌿 {bank_display_name} - NCA",
-                    style_function=lambda x, color=bank_color: {
-                        "fillColor": color, "color": color, "weight": 1, 
-                        "fillOpacity": 0.1, "opacity": 0.6, "dashArray": "10,5"
+                    name=f"🌿 {bank_display_name} - Extended Catchment",
+                    style_function=lambda x: {
+                        "fillColor": "green", 
+                        "color": "green",  # Green border
+                        "weight": 2, 
+                        "fillOpacity": 0.05,  # Very light green fill for NCA
+                        "opacity": 0.8,
+                        "dashArray": "5,5"  # Dotted border
                     },
-                    tooltip=f"Bank NCA: {sstr(bgeo.get('nca_name', 'Unknown'))}"
+                    tooltip=f"Bank: {bank_display_name} - NCA: {sstr(bgeo.get('nca_name', 'Unknown'))}"
                 ).add_to(fmap)
 
-            # Create detailed popup
+            # Create detailed popup for bank marker
             habitat_details = []
             for _, r in g.sort_values('units_supplied', ascending=False).head(6).iterrows():
                 habitat_details.append(
@@ -668,7 +673,7 @@ def build_results_map(alloc_df: pd.DataFrame):
             
             popup_html = f"""
             <div style="font-family: Arial; font-size: 12px; width: 300px;">
-                <h4 style="margin: 0 0 10px 0; color: {bank_color};">🏢 {bank_display_name}</h4>
+                <h4 style="margin: 0 0 10px 0; color: green;">🏢 {bank_display_name}</h4>
                 <p><strong>📍 LPA:</strong> {sstr(bgeo.get('lpa_name', 'Unknown'))}</p>
                 <p><strong>🌿 NCA:</strong> {sstr(bgeo.get('nca_name', 'Unknown'))}</p>
                 <p><strong>📊 Total Units:</strong> {g['units_supplied'].sum():.2f}</p>
@@ -680,19 +685,21 @@ def build_results_map(alloc_df: pd.DataFrame):
             </div>
             """
             
-            # Add bank marker
+            # Add bank marker - green to match catchment
             folium.Marker(
                 [lat_b, lon_b],
-                icon=folium.Icon(color=bank_color, icon="building", prefix="fa"),
+                icon=folium.Icon(color="green", icon="building", prefix="fa"),
                 popup=folium.Popup(popup_html, max_width=350),
                 tooltip=f"🏢 {bank_display_name} - Click for details"
             ).add_to(fmap)
 
-            # Add supply route
+            # Add supply route - green to match bank theme
             if lat0 is not None and lon0 is not None:
                 folium.PolyLine(
                     locations=[[lat0, lon0], [lat_b, lon_b]],
-                    weight=3, opacity=0.7, color=bank_color,
+                    weight=3, 
+                    opacity=0.7, 
+                    color="green",  # Green route line
                     dash_array="8,4",
                     tooltip=f"Supply route: Target → {bank_display_name}"
                 ).add_to(fmap)
@@ -703,7 +710,6 @@ def build_results_map(alloc_df: pd.DataFrame):
     # Add layer control
     folium.LayerControl(collapsed=False).add_to(fmap)
     return fmap
-
 # ================= Map Container (FIXED VERSION) =================
 with st.container():
     st.markdown("### Map")
