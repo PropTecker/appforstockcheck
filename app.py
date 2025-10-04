@@ -82,8 +82,8 @@ init_session_state()
 
 def reset_all_form_data():
     """Reset all form data to start a new quote"""
-    # Keep auth_ok but reset everything else
-    keys_to_keep = ["auth_ok"]
+    # Keep auth_ok and backend-related state
+    keys_to_keep = ["auth_ok", "backend_file_bytes", "backend_file_name", "use_example_backend", "quotes_hold_policy"]
     for key in list(st.session_state.keys()):
         if key not in keys_to_keep:
             del st.session_state[key]
@@ -315,14 +315,38 @@ with st.sidebar:
     uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"])
     if not uploaded:
         st.info("Or use an example backend in ./data", icon="ℹ️")
-    use_example = st.checkbox("Use example backend from ./data",
-                              value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()))
+    
+    # Store uploaded file in session state
+    if uploaded:
+        st.session_state["backend_file_bytes"] = uploaded.getvalue()
+        st.session_state["backend_file_name"] = uploaded.name
+        st.session_state["use_example_backend"] = False
+    
+    use_example = st.checkbox(
+        "Use example backend from ./data",
+        value=st.session_state.get("use_example_backend", bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists())),
+        key="use_example_checkbox"
+    )
+    
+    # Store use_example preference
+    if use_example:
+        st.session_state["use_example_backend"] = True
+        if "backend_file_bytes" in st.session_state:
+            del st.session_state["backend_file_bytes"]
+            del st.session_state["backend_file_name"]
+    
     quotes_hold_policy = st.selectbox(
         "Quotes policy for stock availability",
         ["Ignore quotes (default)", "Quotes hold 100%", "Quotes hold 50%"],
-        index=0,
-        help="How to treat 'quoted' units when computing quantity_available."
+        index=["Ignore quotes (default)", "Quotes hold 100%", "Quotes hold 50%"].index(
+            st.session_state.get("quotes_hold_policy", "Ignore quotes (default)")
+        ),
+        help="How to treat 'quoted' units when computing quantity_available.",
+        key="quotes_policy_select"
     )
+    
+    # Store quotes policy
+    st.session_state["quotes_hold_policy"] = quotes_hold_policy
 
 @st.cache_data
 def load_backend(xls_bytes) -> Dict[str, pd.DataFrame]:
@@ -340,9 +364,10 @@ def load_backend(xls_bytes) -> Dict[str, pd.DataFrame]:
     return backend
 
 backend = None
-if uploaded:
-    backend = load_backend(uploaded.getvalue())
-elif use_example:
+# Load from session state if available (preserves upload across resets)
+if "backend_file_bytes" in st.session_state:
+    backend = load_backend(st.session_state["backend_file_bytes"])
+elif use_example or st.session_state.get("use_example_backend", False):
     ex = Path("data/HabitatBackend_WITH_STOCK.xlsx")
     if ex.exists():
         with ex.open("rb") as f:
@@ -806,9 +831,11 @@ with st.container():
 st.subheader("2) Demand (units required)")
 NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
 
-HAB_CHOICES = sorted(
+HAB_CHOICES_BASE = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
 )
+# Add placeholder at the beginning for clear state
+HAB_CHOICES = [""] + HAB_CHOICES_BASE
 
 with st.container(border=True):
     st.markdown("**Add habitats one by one** (type to search the catalog):")
@@ -816,11 +843,19 @@ with st.container(border=True):
     for idx, row in enumerate(st.session_state.demand_rows):
         c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
         with c1:
+            current_habitat = row["habitat_name"]
+            # Find the index: if habitat exists use it, otherwise use 0 (empty placeholder)
+            try:
+                hab_index = HAB_CHOICES.index(current_habitat) if current_habitat in HAB_CHOICES else 0
+            except ValueError:
+                hab_index = 0
+            
             st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
                 "Habitat", HAB_CHOICES,
-                index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                index=hab_index,
                 key=f"hab_{row['id']}",
                 help="Start typing to filter",
+                placeholder="Select a habitat..."
             )
         with c2:
             st.session_state.demand_rows[idx]["units"] = st.number_input(
@@ -1525,14 +1560,6 @@ with st.expander("🧾 Price readout (normalised view the optimiser uses)", expa
                     )
             except Exception:
                 pass
-
-            csv_bytes = prn.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download pricing (normalised, this size) CSV",
-                data=csv_bytes,
-                file_name=f"pricing_normalised_{chosen_size}.csv",
-                mime="text/csv"
-            )
     except Exception as e:
         st.error(f"Price readout error: {e}")
 
@@ -1700,6 +1727,13 @@ if st.session_state.get("optimization_complete", False):
     
     if alloc_df is not None and not alloc_df.empty:
         st.markdown("---")
+        # Display the persistent success message
+        total_with_admin = total_cost + ADMIN_FEE_GBP
+        st.success(
+            f"Optimisation complete. Contract size = **{size}**. "
+            f"Subtotal (units): **£{total_cost:,.0f}**  |  Admin fee: **£{ADMIN_FEE_GBP:,.0f}**  |  "
+            f"Grand total: **£{total_with_admin:,.0f}**"
+        )
         st.markdown("#### Allocation detail")
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
@@ -1797,20 +1831,6 @@ if st.session_state.get("optimization_complete", False):
             {"Item": "Grand total",      "Amount £": round(total_with_admin, 2)},
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
-
-        # Downloads
-        st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
-                           file_name="allocation.csv", mime="text/csv")
-        st.download_button("Download site/habitat totals (CSV)",
-                           data=df_to_csv_bytes(site_hab_totals),
-                           file_name="site_habitat_totals_effective_units.csv",
-                           mime="text/csv")
-        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
-                           file_name="allocation_by_bank.csv", mime="text/csv")
-        st.download_button("Download by habitat (CSV)", data=df_to_csv_bytes(by_hab),
-                           file_name="allocation_by_habitat.csv", mime="text/csv")
-        st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
-                           file_name="order_summary.csv", mime="text/csv")
 
 # ================= Email Report Generation =================
 # ================= Email Report Generation (EXACT TEMPLATE MATCH) =================
