@@ -563,10 +563,11 @@ with st.container(border=True):
             )
         with c3:
             if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
-                to_delete.append(row["id"]])
+                to_delete.append(row["id"])   # ← fixed: removed stray ]
+
     if to_delete:
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
-        st.rerun()
+        st.rerun()  # immediate refresh after delete
 
     cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
     with cc1:
@@ -588,6 +589,7 @@ with st.container(border=True):
         if st.button("🧹 Clear all", key="clear_all_btn"):
             init_demand_state()
             st.rerun()
+
 
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
 st.metric("Total units", f"{total_units:.2f}")
