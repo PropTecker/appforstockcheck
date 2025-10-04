@@ -1566,6 +1566,7 @@ def df_to_csv_bytes(df):
     buf.seek(0)
     return buf
 
+
 # ================= Run optimiser & compute results =================
 # ================= Run optimiser & compute results =================
 if run:
@@ -1664,7 +1665,7 @@ if run:
             f"Grand total: **£{total_with_admin:,.0f}**"
         )
 
-        # ========== SHOW ALL RESULTS BEFORE st.rerun() ==========
+        # ========== SHOW ALL RESULTS (NO RERUN) ==========
         
         st.markdown("#### Allocation detail")
         st.dataframe(alloc_df, use_container_width=True)
@@ -1777,14 +1778,12 @@ if run:
         st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
                            file_name="order_summary.csv", mime="text/csv")
         
-        # ========== NOW FORCE MAP REFRESH ==========
-        st.info("🗺️ Refreshing map with bank catchment areas...")
-        time.sleep(1)  # Brief pause to let user see all results
-        st.rerun()
+        # ========== MAP UPDATE NOTICE (NO RERUN) ==========
+        st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
-
+        
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
