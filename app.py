@@ -2170,8 +2170,6 @@ if (st.session_state.get("optimization_complete", False) and
     st.markdown("**📧 Email Generation:**")
     
     col1, col2, col3 = st.columns([1, 1, 1])
-    
-    with col1:
 
     
     with col2:
