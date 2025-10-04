@@ -2058,6 +2058,89 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
+
+
+# Add this to your optimization results section (after the downloads):
+if 'alloc_df' in locals() and not alloc_df.empty:
+    st.markdown("---")
+    st.markdown("#### 📧 Client Report Generation")
+    
+    with st.expander("Generate Client Email Report", expanded=False):
+        st.markdown("**Generate a client-facing report table and email:**")
+        
+        # Generate the report
+        client_table, email_html = generate_client_report_table(alloc_df, demand_df, total_cost, ADMIN_FEE_GBP)
+        
+        # Display the table
+        st.markdown("**Client Report Table:**")
+        
+        # Format for display (clean up column names)
+        display_table = client_table.copy()
+        display_table = display_table.rename(columns={
+            "Distinctiveness_Supply": "Supply Distinctiveness",
+            "# Units_Supply": "Supply Units"
+        })
+        
+        # Remove empty development impact columns for display
+        cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
+                       "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
+                       "Price Per Unit", "Offset Cost"]
+        
+        st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
+        
+        # Email generation
+        st.markdown("**📧 Email Generation:**")
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("📋 Copy Email to Clipboard", help="Copy the email HTML to clipboard"):
+                st.code(email_html, language="html")
+                st.success("Email HTML generated! Copy the code above and paste into your email client.")
+        
+        with col2:
+            # Create mailto link
+            project_name = st.session_state.get("project_name_email", "[Project Name]")
+            subject = f"Biodiversity Net Gain Offset Proposal - {project_name}"
+            
+            # Create simplified email body for mailto (HTML doesn't work well in mailto)
+            simple_table = "BIODIVERSITY NET GAIN OFFSET PROPOSAL\n\n"
+            for _, row in client_table[:-1].iterrows():
+                if row["Habitats Supplied"] == "Planning Discharge Pack":
+                    simple_table += f"Planning Discharge Pack: {row['Offset Cost']}\n"
+                else:
+                    simple_table += f"{row['Distinctiveness']} {row['Habitats Lost']} ({row['# Units']} units) -> {row['Distinctiveness_Supply']} {row['Habitats Supplied']} ({row['# Units_Supply']} units) @ {row['Price Per Unit']} = {row['Offset Cost']}\n"
+            
+            total_row = client_table.iloc[-1]
+            simple_table += f"\nTOTAL: {total_row['# Units']} units required -> {total_row['# Units_Supply']} units supplied = {total_row['Offset Cost']}"
+            
+            mailto_link = f"mailto:?subject={subject}&body={simple_table}"
+            
+            st.markdown(f"[📧 Open Email Client]({mailto_link})")
+        
+        # Download options
+        st.markdown("**📥 Download Options:**")
+        
+        col3, col4 = st.columns([1, 1])
+        
+        with col3:
+            # Download as CSV
+            csv_data = display_table[cols_to_show].to_csv(index=False)
+            st.download_button(
+                "Download Client Table (CSV)",
+                data=csv_data,
+                file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+        
+        with col4:
+            # Download email HTML
+            st.download_button(
+                "Download Email HTML",
+                data=email_html,
+                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
+                mime="text/html"
+            )
         
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
