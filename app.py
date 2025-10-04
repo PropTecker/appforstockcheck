@@ -1590,7 +1590,6 @@ def build_results_map(alloc_df: pd.DataFrame):
 with map_container:
     st.markdown("### Map")
     
-    # Force map to always render by using a stable key and proper error handling
     try:
         # Determine what map to show
         has_location = st.session_state.get("target_lat") is not None and st.session_state.get("target_lon") is not None
@@ -1667,9 +1666,6 @@ with map_container:
     except Exception as outer_error:
         st.error(f"Complete map failure: {outer_error}")
         st.info("Map temporarily unavailable")
-            
-            # Show installation instructions
-            st.code("pip install streamlit-folium", language="bash")
 
 # Debug section (temporary - remove later)
 if st.checkbox("Show detailed debug info", value=False):
@@ -1694,8 +1690,6 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
-
-
 
 
 
