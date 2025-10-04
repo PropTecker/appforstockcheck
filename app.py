@@ -483,22 +483,38 @@ if run_locate:
     except Exception as e:
         st.error(f"Location error: {e}")
 
-def render_base_map():
+def render_base_map_coords(lat: Optional[float], lon: Optional[float],
+                           lpa_gj: Optional[Dict[str, Any]],
+                           nca_gj: Optional[Dict[str, Any]],
+                           lpa_label: str = "", nca_label: str = ""):
     # Safe default if no coords yet
-    if target_lat is None or target_lon is None:
+    if lat is None or lon is None:
         fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
         folium.LayerControl(collapsed=True).add_to(fmap)
         return fmap
-    fmap = folium.Map(location=[target_lat, target_lon], zoom_start=11, control_scale=True)
-    add_geojson_layer(fmap, lpa_geojson, f"LPA: {target_lpa_name}" if target_lpa_name else "LPA", color="red", weight=2, fill_opacity=0.05)
-    add_geojson_layer(fmap, nca_geojson, f"NCA: {target_nca_name}" if target_nca_name else "NCA", color="yellow", weight=3, fill_opacity=0.05)
-    folium.CircleMarker([target_lat, target_lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
+
+    fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
+    add_geojson_layer(fmap, lpa_gj, f"LPA: {lpa_label}" if lpa_label else "LPA",
+                      color="red", weight=2, fill_opacity=0.05)
+    add_geojson_layer(fmap, nca_gj, f"NCA: {nca_label}" if nca_label else "NCA",
+                      color="yellow", weight=3, fill_opacity=0.05)
+    folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
     return fmap
 
-if (target_lat is not None) and (target_lon is not None):
+
+if (st.session_state.get("target_lat") is not None) and (st.session_state.get("target_lon") is not None):
     st.markdown("### Map")
-    st_folium(render_base_map(), height=420, returned_objects=[], use_container_width=True, key="basemap")
+    fmap_base = render_base_map_coords(
+        st.session_state.get("target_lat"),
+        st.session_state.get("target_lon"),
+        st.session_state.get("lpa_geojson"),
+        st.session_state.get("nca_geojson"),
+        st.session_state.get("target_lpa_name", ""),
+        st.session_state.get("target_nca_name", "")
+    )
+    st_folium(fmap_base, height=420, returned_objects=[], use_container_width=True, key="basemap")
+
 
 # ========= Demand =========
 st.subheader("2) Demand (units required)")
@@ -1348,7 +1364,17 @@ if run:
         # ------- Map overlay: chosen banks and links -------
         # Always render a map (UK-wide if no target coords),
         # then add overlays; only draw route lines when coords exist.
-        fmap = render_base_map()
+        # ------- Map overlay: chosen banks and links -------
+        lat0 = st.session_state.get("target_lat")
+        lon0 = st.session_state.get("target_lon")
+        fmap = render_base_map_coords(
+            lat0, lon0,
+            st.session_state.get("lpa_geojson"),
+            st.session_state.get("nca_geojson"),
+            st.session_state.get("target_lpa_name", ""),
+            st.session_state.get("target_nca_name", "")
+        )
+
         
         # Bank coordinates via Banks (geocode if needed)
         bank_coords: Dict[str, Tuple[float,float]] = {}
@@ -1404,22 +1430,24 @@ if run:
                     popup_lines.append("<b>Breakdown:</b>")
                     for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
                         popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
-        
+    
                     folium.Marker(
                         [lat_b, lon_b],
                         icon=folium.Icon(color="green", icon="leaf"),
                         popup=folium.Popup("<br>".join(popup_lines), max_width=420)
                     ).add_to(fmap)
-        
+    
                     # Route line only if target coords exist
-                    if (target_lat is not None) and (target_lon is not None):
+                    if (lat0 is not None) and (lon0 is not None):
                         folium.PolyLine(
-                            locations=[[target_lat, target_lon], [lat_b, lon_b]],
+                            locations=[[lat0, lon0], [lat_b, lon_b]],
                             weight=2, opacity=0.8, dash_array="6,6", color="blue",
                             tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
                         ).add_to(fmap)
+    
                 except Exception as map_e:
                     st.caption(f"Skipped map overlay for bank {sstr(bname) or sstr(bkey)}: {map_e}")
+
         
         st.markdown("### Map (with selected supply)")
         st_folium(fmap, height=520, returned_objects=[], use_container_width=True, key="resultmap")
