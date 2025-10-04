@@ -1584,38 +1584,87 @@ def build_results_map(alloc_df: pd.DataFrame):
 
     return fmap
 
+# Replace the entire "Map Display (Always Visible)" section with this:
+
 # ================= Map Display (Always Visible) =================
 with map_container:
     st.markdown("### Map")
     
     try:
-        # Show appropriate map based on state
-        alloc_present = st.session_state.get("last_alloc_df", None)
+        # Determine what map to show
+        has_location = st.session_state.get("target_lat") is not None and st.session_state.get("target_lon") is not None
+        has_results = (isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
+                      not st.session_state.get("last_alloc_df").empty and 
+                      st.session_state.get("optimization_complete", False))
         
-        if isinstance(alloc_present, pd.DataFrame) and not alloc_present.empty and st.session_state.get("optimization_complete", False):
-            # Show results map
-            fmap_to_show = build_results_map(alloc_present)
-            map_key = f"results_map_{id(alloc_present)}"
-        else:
-            # Show base map
+        if has_results:
+            st.caption("📍 Showing optimization results with bank locations and supply routes")
+            fmap_to_show = build_results_map(st.session_state["last_alloc_df"])
+        elif has_location:
+            st.caption("📍 Showing target location with LPA/NCA boundaries")
             fmap_to_show = build_base_map()
-            map_key = f"base_map_{st.session_state.get('target_lat', 0)}_{st.session_state.get('target_lon', 0)}"
+        else:
+            st.caption("📍 Showing UK overview - use 'Locate' to center on your target site")
+            fmap_to_show = build_base_map()
         
-        # Render map with unique key to prevent flickering
-        try:
-            st_folium(fmap_to_show, height=520, use_container_width=True, key=map_key)
-        except Exception:
-            # Fallback to folium_static if st_folium fails
-            if folium_static:
-                folium_static(fmap_to_show, width=None, height=520)
-            else:
-                st.error("Map rendering failed")
+        # Always try st_folium first with a simple key
+        map_data = st_folium(
+            fmap_to_show, 
+            height=520, 
+            use_container_width=True,
+            key=f"main_map_{st.session_state.get('map_version', 0)}",
+            returned_data=["last_object_clicked"]
+        )
+        
+        # Debug info
+        if st.checkbox("Show map debug info", value=False):
+            st.write("Map state:")
+            st.write(f"- Has location: {has_location}")
+            st.write(f"- Has results: {has_results}")
+            st.write(f"- Target coords: {st.session_state.get('target_lat')}, {st.session_state.get('target_lon')}")
+            st.write(f"- Map version: {st.session_state.get('map_version')}")
+            if has_results:
+                st.write(f"- Results shape: {st.session_state['last_alloc_df'].shape}")
 
     except Exception as e:
-        st.warning(f"Map rendering error: {e}")
-        # Show a simple placeholder
-        st.info("Map temporarily unavailable")
+        st.error(f"Map rendering error: {e}")
+        
+        # Simple fallback map
+        try:
+            simple_map = folium.Map(location=[54.5, -2.5], zoom_start=6)
+            if folium_static:
+                st.write("**Fallback Map (Static)**")
+                folium_static(simple_map, width=700, height=400)
+            else:
+                st.write("**Fallback Map**")
+                st_folium(simple_map, height=400, key="fallback_map")
+        except Exception as e2:
+            st.error(f"Even fallback map failed: {e2}")
+            st.info("Map functionality temporarily unavailable. Please refresh the page.")
 
+# Debug section (temporary - remove later)
+if st.checkbox("Show detailed debug info", value=False):
+    st.subheader("Debug Information")
+    st.write("**Session State Map-Related:**")
+    debug_keys = ["target_lat", "target_lon", "target_lpa_name", "target_nca_name", 
+                  "map_version", "optimization_complete"]
+    for key in debug_keys:
+        st.write(f"- {key}: {st.session_state.get(key, 'NOT SET')}")
+    
+    st.write("**Last Allocation DF:**")
+    if "last_alloc_df" in st.session_state:
+        if st.session_state["last_alloc_df"] is not None:
+            st.write(f"Shape: {st.session_state['last_alloc_df'].shape}")
+            st.write("Columns:", list(st.session_state["last_alloc_df"].columns))
+        else:
+            st.write("None")
+    else:
+        st.write("Not in session state")
+    
+    st.write("**Import Status:**")
+    st.write(f"- folium imported: {folium is not None}")
+    st.write(f"- st_folium imported: {st_folium is not None}")
+    st.write(f"- folium_static available: {folium_static is not None}")
 
 
 
