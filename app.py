@@ -1791,14 +1791,14 @@ if run:
 # ================= Fixed Email Report Generation Function =================
 def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
                                        client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
-    """Generate the client-facing report table and email body matching exact template - NO INPUTS"""
+    """Generate the client-facing report table and email body matching exact template with improved styling"""
     
     # Separate by habitat types
     area_habitats = []
     hedgerow_habitats = []
     watercourse_habitats = []
     
-    # Process each demand
+    # Process each demand (same logic as before)
     for _, demand_row in demand_df.iterrows():
         demand_habitat = demand_row["habitat_name"]
         demand_units = demand_row["units_required"]
@@ -1858,33 +1858,33 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     total_with_admin = total_cost + admin_fee
     
-    # Build HTML table matching exact format
+    # Build HTML table with improved styling (30% narrower, better colors)
     html_table = """
-    <table border="1" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 11px;">
+    <table border="1" style="border-collapse: collapse; width: 70%; margin: 0 auto; font-family: Arial, sans-serif; font-size: 11px;">
         <thead>
-            <tr style="background-color: #f0f0f0;">
-                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Development Impact</th>
-                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Mitigation Supplied from Wild Capital</th>
+            <tr>
+                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Development Impact</th>
+                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
             </tr>
-            <tr style="background-color: #f8f8f8;">
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Lost</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Supplied</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Price Per Unit</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Offset Cost</th>
+            <tr>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Offset Cost</th>
             </tr>
         </thead>
         <tbody>
     """
     
-    # Add Area Habitats section
+    # Add Area Habitats section with light green background
     if area_habitats:
         html_table += """
-            <tr style="background-color: #e0e0e0;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Area Habitats</td>
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Area Habitats</td>
             </tr>
         """
         for habitat in area_habitats:
@@ -1901,11 +1901,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Hedgerow Habitats section
+    # Add Hedgerow Habitats section with light green background
     if hedgerow_habitats:
         html_table += """
-            <tr style="background-color: #e0e0e0;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Hedgerow Habitats</td>
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Hedgerow Habitats</td>
             </tr>
         """
         for habitat in hedgerow_habitats:
@@ -1922,11 +1922,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Watercourse Habitats section
+    # Add Watercourse Habitats section with light green background
     if watercourse_habitats:
         html_table += """
-            <tr style="background-color: #e0e0e0;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Watercourse Habitats</td>
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Watercourse Habitats</td>
             </tr>
         """
         for habitat in watercourse_habitats:
@@ -1945,8 +1945,8 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     # Add Spatial Risk Multiplier section (placeholder)
     html_table += """
-        <tr style="background-color: #e0e0e0;">
-            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Spatial Risk Multiplier</td>
+        <tr style="background-color: #90EE90;">
+            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
         </tr>
         <tr>
             <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
@@ -1981,6 +1981,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     </tbody>
     </table>
     """
+    
+    # Rest of the function remains the same...
+    # (email body generation continues as before)
+    
+    # [Include the rest of the email body generation here - the next_steps logic and email_body assembly]
     
     # Determine next steps based on amount (programmatic ending)
     if total_with_admin < 10000:
@@ -2079,13 +2084,12 @@ if (st.session_state.get("optimization_complete", False) and
     if "email_location" not in st.session_state:
         st.session_state.email_location = "INSERT LOCATION"
     
-    with st.expander("Generate Client Email Report", expanded=False):
+    with st.expander("Generate Client Email Report", expanded=True):  # Force it to stay expanded
         st.markdown("**Generate a client-facing report table and email:**")
         
-        # ========== FIXED INPUTS - NO CALLBACKS ==========
-        st.markdown("**📝 Email Details:**")
-
+        # ========== FIXED FORM WITH PERSISTENCE ==========
         with st.form("client_email_form", clear_on_submit=False):
+            st.markdown("**📝 Email Details:**")
             col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
             
             with col_input1:
@@ -2111,13 +2115,14 @@ if (st.session_state.get("optimization_complete", False) and
             
             # Form submit button
             form_submitted = st.form_submit_button("Update Email Details")
-            
-            # Only update session state when form is submitted
-            if form_submitted:
-                st.session_state.email_client_name = form_client_name
-                st.session_state.email_ref_number = form_ref_number
-                st.session_state.email_location = form_location
-                st.success("Email details updated!")
+        
+        # Handle form submission OUTSIDE the form but INSIDE the expander
+        if form_submitted:
+            st.session_state.email_client_name = form_client_name
+            st.session_state.email_ref_number = form_ref_number
+            st.session_state.email_location = form_location
+            st.success("Email details updated!")
+            # Don't call st.rerun() - let it naturally update
         
         # Use the session state values for generating the report
         client_name = st.session_state.email_client_name
