@@ -1567,6 +1567,7 @@ def df_to_csv_bytes(df):
     return buf
 
 # ================= Run optimiser & compute results =================
+# ================= Run optimiser & compute results =================
 if run:
     try:
         if demand_df.empty:
@@ -1662,14 +1663,9 @@ if run:
             f"Subtotal (units): **£{total_cost:,.0f}**  |  Admin fee: **£{ADMIN_FEE_GBP:,.0f}**  |  "
             f"Grand total: **£{total_with_admin:,.0f}**"
         )
+
+        # ========== SHOW ALL RESULTS BEFORE st.rerun() ==========
         
-        # Force a rerun to refresh the map with new data
-        st.info("🗺️ Map will update automatically with bank catchment areas...")
-        time.sleep(0.5)  # Brief pause to let user see the message
-        st.rerun()
-
-        # Rest of your existing code (allocation tables, downloads, etc.)
-
         st.markdown("#### Allocation detail")
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
@@ -1744,11 +1740,6 @@ if run:
 
         st.dataframe(site_hab_totals, use_container_width=True, hide_index=True)
 
-        st.download_button("Download site/habitat totals (CSV)",
-                           data=df_to_csv_bytes(site_hab_totals),
-                           file_name="site_habitat_totals_effective_units.csv",
-                           mime="text/csv")
-
         # ---------- By bank / by habitat ----------
         st.markdown("#### By bank")
         by_bank = alloc_df.groupby(["BANK_KEY","bank_name","bank_id"], as_index=False).agg(
@@ -1772,57 +1763,24 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
 
-        # Save to session for results map and set flag
-        # Save to session for results map and set flag
-        st.session_state["last_alloc_df"] = alloc_df.copy()
-        st.session_state["optimization_complete"] = True
-        
-        # Pre-load bank catchment data for immediate map display
-        with st.spinner("Loading bank catchment areas for map..."):
-            selected_banks = alloc_df["BANK_KEY"].unique()
-            
-            # Get bank coordinates
-            bank_coords: Dict[str, Tuple[float,float]] = {}
-            banks_df = backend["Banks"].copy()
-            for _, b in banks_df.iterrows():
-                bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
-                loc = bank_row_to_latlon(b)
-                if loc:
-                    bank_coords[bkey] = (loc[0], loc[1])
-            
-            # Load catchment data for each selected bank
-            catchments_loaded = 0
-            for bkey in selected_banks:
-                cache_key = sstr(bkey)
-                if cache_key not in st.session_state["bank_catchment_geo"]:
-                    if sstr(bkey) in bank_coords:
-                        try:
-                            lat_b, lon_b = bank_coords[sstr(bkey)]
-                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                            st.session_state["bank_catchment_geo"][cache_key] = {
-                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                            }
-                            catchments_loaded += 1
-                        except Exception as e:
-                            st.warning(f"Could not load catchment for bank {bkey}: {e}")
-            
-            if catchments_loaded > 0:
-                st.success(f"✅ Loaded catchment data for {catchments_loaded} bank(s)")
-        
-        # Show map update notice
-        st.info("📍 Map updated with selected bank locations and catchment areas!")
-
-        
-        # downloads
+        # Downloads
         st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
                            file_name="allocation.csv", mime="text/csv")
+        st.download_button("Download site/habitat totals (CSV)",
+                           data=df_to_csv_bytes(site_hab_totals),
+                           file_name="site_habitat_totals_effective_units.csv",
+                           mime="text/csv")
         st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
                            file_name="allocation_by_bank.csv", mime="text/csv")
         st.download_button("Download by habitat (CSV)", data=df_to_csv_bytes(by_hab),
                            file_name="allocation_by_habitat.csv", mime="text/csv")
         st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
                            file_name="order_summary.csv", mime="text/csv")
+        
+        # ========== NOW FORCE MAP REFRESH ==========
+        st.info("🗺️ Refreshing map with bank catchment areas...")
+        time.sleep(1)  # Brief pause to let user see all results
+        st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
