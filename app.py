@@ -342,20 +342,33 @@ for sheet, cols in {
 # ========= Normalise Pricing; drop Hedgerow =========
 def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     df = pr_df.copy()
+
+    # accept any of these header spellings for the price column
     price_cols = [c for c in df.columns if c.strip().lower() in ("price","unit price","unit_price","unitprice")]
     if not price_cols:
         st.error("Pricing sheet must contain a 'Price' column (or 'Unit Price').")
         st.stop()
+
     df["price"] = pd.to_numeric(df[price_cols[0]], errors="coerce")
-    df["tier"] = df["tier"].astype(str).str.strip().lower()
-    df["contract_size"] = df["contract_size"].astype(str).str.strip().lower()
+
+    # ✅ use .str.lower() (Series string accessor), not .lower()
+    df["tier"] = df["tier"].astype(str).str.strip().str.lower()
+    df["contract_size"] = df["contract_size"].astype(str).str.strip().str.lower()
+
     df["bank_id"] = df["bank_id"].astype(str).str.strip()
     df = make_bank_key_col(df, backend["Banks"])
-    if "broader_type" not in df.columns: df["broader_type"] = ""
-    if "distinctiveness_name" not in df.columns: df["distinctiveness_name"] = ""
+
+    if "broader_type" not in df.columns:
+        df["broader_type"] = ""
+    if "distinctiveness_name" not in df.columns:
+        df["distinctiveness_name"] = ""
+
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
+
+    # 🚫 never price Hedgerow
     df = df[~df["habitat_name"].map(is_hedgerow)].copy()
     return df
+
 
 backend["Stock"] = backend["Stock"][~backend["Stock"]["habitat_name"].map(is_hedgerow)].copy()
 backend["Pricing"] = normalise_pricing(backend["Pricing"])
