@@ -2053,90 +2053,91 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
         
         # Email generation
         # Enhanced email generation with .eml file creation:
-    st.markdown("**📧 Email Generation:**")
+# Enhanced email generation with .eml file creation:
+st.markdown("**📧 Email Generation:**")
+
+col1, col2, col3 = st.columns([1, 1, 1])
+
+with col1:
+    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
+        st.code(email_html, language="html")
+        st.success("Email HTML generated! Copy the code above and paste into your email client.")
+
+with col2:
+    # Create .eml file content
+    import base64
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
     
-    col1, col2, col3 = st.columns([1, 1, 1])
+    subject = f"BNG Quote {ref_number} - {location}"
+    total_with_admin = session_total_cost + ADMIN_FEE_GBP
     
-    with col1:
-        if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-            st.code(email_html, language="html")
-            st.success("Email HTML generated! Copy the code above and paste into your email client.")
+    # Create email message
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+    msg['To'] = ''  # Will be filled by user
     
-    with col2:
-        # Create .eml file content
-        import base64
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
-        
-        subject = f"BNG Quote {ref_number} - {location}"
-        total_with_admin = session_total_cost + ADMIN_FEE_GBP
-        
-        # Create email message
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
-        msg['To'] = ''  # Will be filled by user
-        
-        # Create text version for email clients that don't support HTML
-        text_body = f"""Dear {client_name}
+    # Create text version for email clients that don't support HTML
+    text_body = f"""Dear {client_name}
+
+Our Ref: {ref_number}
+
+Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+
+Thank you for enquiring about BNG Units for your development in {location}
+
+About Us
+
+Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
+
+Your Quote - £{total_with_admin:,.0f} + VAT
+
+[Please view the HTML version of this email for the detailed pricing breakdown table]
+
+Total Units Required: {session_demand_df['units_required'].sum():.2f}
+Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
+Total Cost: £{total_with_admin:,.0f} + VAT
+
+Next Steps
+BNG is a pre-commencement, not a pre-planning, condition.
+
+To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+
+If you have any questions, please reply to this email or call 01962 436574.
+
+Best regards,
+Wild Capital Team"""
     
-    Our Ref: {ref_number}
+    # Attach text and HTML versions
+    text_part = MIMEText(text_body, 'plain')
+    html_part = MIMEText(email_html, 'html')
     
-    Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+    msg.attach(text_part)
+    msg.attach(html_part)
     
-    Thank you for enquiring about BNG Units for your development in {location}
+    # Convert to string
+    eml_content = msg.as_string()
     
-    About Us
+    # Download button for .eml file
+    st.download_button(
+        "📧 Download Email (.eml)",
+        data=eml_content,
+        file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+        mime="message/rfc822",
+        help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+    )
+
+with col3:
+    # Simple mailto fallback
+    import urllib.parse
     
-    Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
+    encoded_subject = urllib.parse.quote(subject)
+    simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+    encoded_simple = urllib.parse.quote(simple_body)
     
-    Your Quote - £{total_with_admin:,.0f} + VAT
-    
-    [Please view the HTML version of this email for the detailed pricing breakdown table]
-    
-    Total Units Required: {session_demand_df['units_required'].sum():.2f}
-    Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
-    Total Cost: £{total_with_admin:,.0f} + VAT
-    
-    Next Steps
-    BNG is a pre-commencement, not a pre-planning, condition.
-    
-    To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-    
-    If you have any questions, please reply to this email or call 01962 436574.
-    
-    Best regards,
-    Wild Capital Team"""
-        
-        # Attach text and HTML versions
-        text_part = MIMEText(text_body, 'plain')
-        html_part = MIMEText(email_html, 'html')
-        
-        msg.attach(text_part)
-            msg.attach(html_part)
-            
-            # Convert to string
-            eml_content = msg.as_string()
-            
-            # Download button for .eml file
-            st.download_button(
-                "📧 Download Email (.eml)",
-                data=eml_content,
-                file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-                mime="message/rfc822",
-                help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-            )
-        
-        with col3:
-            # Simple mailto fallback
-            import urllib.parse
-            
-            encoded_subject = urllib.parse.quote(subject)
-            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
-            encoded_simple = urllib.parse.quote(simple_body)
-            
-            mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
-            st.markdown(f"[📧 Quick Email]({mailto_link})")
+    mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
+    st.markdown(f"[📧 Quick Email]({mailto_link})")
                         
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
@@ -2161,6 +2162,13 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
+
+
+
+
+
+
+
 
 
 
