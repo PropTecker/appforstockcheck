@@ -704,7 +704,7 @@ def build_results_map(alloc_df: pd.DataFrame):
     folium.LayerControl(collapsed=False).add_to(fmap)
     return fmap
 
-# ================= Map Container (STABLE VERSION) =================
+# ================= Map Container (DEBUGGING VERSION) =================
 with st.container():
     st.markdown("### Map")
     
@@ -714,47 +714,90 @@ with st.container():
                   not st.session_state.get("last_alloc_df").empty and 
                   st.session_state.get("optimization_complete", False))
     
-    # Create a super stable key that rarely changes
-    stable_key = "bng_main_map"
+    # Debug info
+    if st.checkbox("Show map debug", value=False):
+        st.write("**Debug Info:**")
+        st.write(f"- has_location: {has_location}")
+        st.write(f"- has_results: {has_results}")
+        st.write(f"- optimization_complete: {st.session_state.get('optimization_complete')}")
+        if has_results:
+            st.write(f"- alloc_df shape: {st.session_state['last_alloc_df'].shape}")
+            st.write(f"- unique banks: {st.session_state['last_alloc_df']['BANK_KEY'].unique().tolist()}")
+            st.write(f"- catchment cache keys: {list(st.session_state.get('bank_catchment_geo', {}).keys())}")
     
     # Show status
     if has_results:
-        st.caption("📍 Showing optimization results with bank catchments")
         num_banks = st.session_state["last_alloc_df"]["BANK_KEY"].nunique()
-        st.info(f"Map shows {num_banks} selected bank(s) with their LPA/NCA boundaries")
+        st.caption(f"📍 Showing optimization results with {num_banks} bank(s)")
+        
+        # Show which banks should have overlays
+        banks_list = st.session_state["last_alloc_df"]["BANK_KEY"].unique().tolist()
+        st.info(f"Selected banks: {', '.join(banks_list)}")
+        
     elif has_location:
         st.caption("📍 Showing target location with LPA/NCA boundaries")
     else:
         st.caption("📍 UK overview - use 'Locate' to center on your target site")
     
+    # Force reload catchment data button
+    if has_results and st.button("🔄 Force Reload Bank Catchments"):
+        # Clear cache and reload
+        st.session_state["bank_catchment_geo"] = {}
+        with st.spinner("Reloading bank catchment data..."):
+            alloc_df = st.session_state["last_alloc_df"]
+            bank_coords: Dict[str, Tuple[float,float]] = {}
+            banks_df = backend["Banks"].copy()
+            
+            # Pre-load all bank coordinates
+            for _, b in banks_df.iterrows():
+                bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
+                loc = bank_row_to_latlon(b)
+                if loc:
+                    bank_coords[bkey] = (loc[0], loc[1])
+            
+            # Pre-load catchment data for selected banks
+            for bkey in alloc_df["BANK_KEY"].unique():
+                if sstr(bkey) in bank_coords:
+                    lat_b, lon_b = bank_coords[sstr(bkey)]
+                    try:
+                        b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                        st.session_state["bank_catchment_geo"][sstr(bkey)] = {
+                            "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                            "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                        }
+                        st.success(f"✅ Loaded catchment for {bkey}")
+                    except Exception as e:
+                        st.error(f"❌ Failed to load catchment for {bkey}: {e}")
+        st.rerun()
+    
     # Build and render map
     try:
         if has_results:
+            st.write("**Building results map...**")
             current_map = build_results_map(st.session_state["last_alloc_df"])
         else:
             current_map = build_base_map()
         
-        # Use folium_static if available for stability, otherwise st_folium
+        # Create a key that changes when we get new results
+        if has_results:
+            results_hash = hash(str(st.session_state["last_alloc_df"].to_dict()))
+            map_key = f"results_map_{results_hash}"
+        else:
+            map_key = "base_map"
+        
+        # Use folium_static for stability
         if folium_static:
-            st.write("**Interactive Map** (static render for stability)")
+            st.write("**Map Rendered Successfully**")
             folium_static(current_map, width=None, height=520)
             
-            # Add a note about interactivity
             if has_results:
-                st.info("💡 **Map Legend:** Red = Target boundaries, Colored dashed lines = Bank catchments, Building icons = Selected banks")
+                st.success("✅ Results map should show bank catchment overlays")
         else:
-            # Fallback to st_folium with minimal parameters
-            st_folium(
-                current_map,
-                height=520,
-                use_container_width=True,
-                key=stable_key
-            )
+            st_folium(current_map, height=520, use_container_width=True, key=map_key)
 
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
-        st.info("Try refreshing the page if the map doesn't load properly.")
-
+        st.write("**Error details:**", str(e))
     # Manual refresh option
     if st.button("🔄 Refresh Map", help="Click if map overlays are not showing"):
         # Clear catchment cache to force reload
@@ -1692,8 +1735,42 @@ if run:
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
 
         # Save to session for results map and set flag
+        # Save to session for results map and set flag
         st.session_state["last_alloc_df"] = alloc_df.copy()
         st.session_state["optimization_complete"] = True
+        
+        # Pre-load bank catchment data for immediate map display
+        with st.spinner("Loading bank catchment areas for map..."):
+            selected_banks = alloc_df["BANK_KEY"].unique()
+            
+            # Get bank coordinates
+            bank_coords: Dict[str, Tuple[float,float]] = {}
+            banks_df = backend["Banks"].copy()
+            for _, b in banks_df.iterrows():
+                bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
+                loc = bank_row_to_latlon(b)
+                if loc:
+                    bank_coords[bkey] = (loc[0], loc[1])
+            
+            # Load catchment data for each selected bank
+            catchments_loaded = 0
+            for bkey in selected_banks:
+                cache_key = sstr(bkey)
+                if cache_key not in st.session_state["bank_catchment_geo"]:
+                    if sstr(bkey) in bank_coords:
+                        try:
+                            lat_b, lon_b = bank_coords[sstr(bkey)]
+                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                            st.session_state["bank_catchment_geo"][cache_key] = {
+                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                            }
+                            catchments_loaded += 1
+                        except Exception as e:
+                            st.warning(f"Could not load catchment for bank {bkey}: {e}")
+            
+            if catchments_loaded > 0:
+                st.success(f"✅ Loaded catchment data for {catchments_loaded} bank(s)")
         
         # Show map update notice
         st.info("📍 Map updated with selected bank locations and catchment areas!")
