@@ -1783,6 +1783,282 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
+# ================= Email Report Generation =================
+def generate_client_report_table(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float) -> Tuple[pd.DataFrame, str]:
+    """Generate the client-facing report table and email body"""
+    
+    # Create the client report table
+    report_rows = []
+    
+    # Process each demand
+    for _, demand_row in demand_df.iterrows():
+        demand_habitat = demand_row["habitat_name"]
+        demand_units = demand_row["units_required"]
+        
+        # Find corresponding allocation(s)
+        matching_allocs = alloc_df[alloc_df["demand_habitat"] == demand_habitat]
+        
+        if matching_allocs.empty:
+            continue
+            
+        for _, alloc_row in matching_allocs.iterrows():
+            # Determine demand distinctiveness
+            if demand_habitat == NET_GAIN_LABEL:
+                demand_distinctiveness = "Low + 10% Net Gain"
+                demand_habitat_display = "Any"
+            else:
+                # Look up from catalog
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
+                if not cat_match.empty:
+                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    demand_habitat_display = demand_habitat
+                else:
+                    demand_distinctiveness = "Medium"  # Default
+                    demand_habitat_display = demand_habitat
+            
+            # Supply info
+            supply_habitat = alloc_row["supply_habitat"]
+            supply_units = alloc_row["units_supplied"]
+            unit_price = alloc_row["unit_price"]
+            offset_cost = alloc_row["cost"]
+            
+            # Determine supply distinctiveness
+            supply_cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == supply_habitat]
+            if not supply_cat_match.empty:
+                supply_distinctiveness = supply_cat_match["distinctiveness_name"].iloc[0]
+            else:
+                supply_distinctiveness = "Medium"  # Default
+            
+            report_rows.append({
+                "Development Impact": "",
+                "Distinctiveness": demand_distinctiveness,
+                "Habitats Lost": demand_habitat_display,
+                "# Units": f"{demand_units:.2f}",
+                "Mitigation Supplied from Wild Capital": "",
+                "Distinctiveness_Supply": supply_distinctiveness,
+                "Habitats Supplied": supply_habitat,
+                "# Units_Supply": f"{supply_units:.2f}",
+                "Price Per Unit": f"£{unit_price:,.0f}",
+                "Offset Cost": f"£{offset_cost:,.0f}"
+            })
+    
+    # Add admin fee row
+    report_rows.append({
+        "Development Impact": "",
+        "Distinctiveness": "",
+        "Habitats Lost": "",
+        "# Units": "",
+        "Mitigation Supplied from Wild Capital": "",
+        "Distinctiveness_Supply": "",
+        "Habitats Supplied": "Planning Discharge Pack",
+        "# Units_Supply": "",
+        "Price Per Unit": "",
+        "Offset Cost": f"£{admin_fee:,.0f}"
+    })
+    
+    # Add total row
+    total_demand_units = demand_df["units_required"].sum()
+    total_supply_units = alloc_df["units_supplied"].sum()
+    grand_total = total_cost + admin_fee
+    
+    report_rows.append({
+        "Development Impact": "",
+        "Distinctiveness": "Total",
+        "Habitats Lost": "",
+        "# Units": f"{total_demand_units:.2f}",
+        "Mitigation Supplied from Wild Capital": "",
+        "Distinctiveness_Supply": "",
+        "Habitats Supplied": "",
+        "# Units_Supply": f"{total_supply_units:.2f}",
+        "Price Per Unit": "",
+        "Offset Cost": f"£{grand_total:,.0f}"
+    })
+    
+    report_df = pd.DataFrame(report_rows)
+    
+    # Generate email body
+    project_name = st.text_input("Project Name (for email)", value="[Project Name]", key="project_name_email")
+    client_name = st.text_input("Client Name", value="[Client Name]", key="client_name_email")
+    
+    # Create table for email (HTML format)
+    html_table = """
+    <table border="1" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px;">
+        <thead>
+            <tr style="background-color: #f0f0f0;">
+                <th colspan="4" style="text-align: center; padding: 8px; border: 1px solid #ccc;">Development Impact</th>
+                <th colspan="6" style="text-align: center; padding: 8px; border: 1px solid #ccc;">Mitigation Supplied from Wild Capital</th>
+            </tr>
+            <tr style="background-color: #f8f8f8;">
+                <th style="padding: 6px; border: 1px solid #ccc;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #ccc;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #ccc;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #ccc;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #ccc;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #ccc;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #ccc;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #ccc;">Offset Cost</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+    
+    # Add data rows
+    for _, row in report_df[:-1].iterrows():  # Exclude total row for now
+        if row["Habitats Supplied"] == "Planning Discharge Pack":
+            html_table += f"""
+            <tr>
+                <td colspan="7" style="padding: 6px; border: 1px solid #ccc; text-align: right; font-weight: bold;">Planning Discharge Pack</td>
+                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["Offset Cost"]}</td>
+            </tr>
+            """
+        else:
+            html_table += f"""
+            <tr>
+                <td style="padding: 6px; border: 1px solid #ccc;">{row["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc;">{row["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc;">{row["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc;">{row["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{row["Offset Cost"]}</td>
+            </tr>
+            """
+    
+    # Add total row
+    total_row = report_df.iloc[-1]
+    html_table += f"""
+        <tr style="background-color: #f0f0f0; font-weight: bold;">
+            <td style="padding: 6px; border: 1px solid #ccc;">Total</td>
+            <td style="padding: 6px; border: 1px solid #ccc;"></td>
+            <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{total_row["# Units"]}</td>
+            <td style="padding: 6px; border: 1px solid #ccc;"></td>
+            <td style="padding: 6px; border: 1px solid #ccc;"></td>
+            <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{total_row["# Units_Supply"]}</td>
+            <td style="padding: 6px; border: 1px solid #ccc;"></td>
+            <td style="padding: 6px; border: 1px solid #ccc; text-align: right;">{total_row["Offset Cost"]}</td>
+        </tr>
+    </tbody>
+    </table>
+    """
+    
+    # Email body
+    email_body = f"""
+Subject: Biodiversity Net Gain Offset Proposal - {project_name}
+
+Dear {client_name},
+
+Thank you for your inquiry regarding biodiversity net gain offsets for {project_name}. Please find below our proposal for the required habitat mitigation:
+
+{html_table}
+
+<br><br>
+<strong>Key Points:</strong>
+<ul>
+    <li>All habitat units are sourced from our verified biodiversity sites</li>
+    <li>Offset delivery meets the requirements of the Environment Act 2021</li>
+    <li>Planning discharge pack includes all necessary documentation for your LPA submission</li>
+    <li>Price valid for 30 days from date of quote</li>
+</ul>
+
+<br>
+<strong>Next Steps:</strong>
+<br>
+If you would like to proceed with this proposal, please confirm your acceptance and we will prepare the formal agreement and arrange site surveys as required.
+
+<br><br>
+Best regards,<br>
+Wild Capital Team<br>
+[Your contact details]
+
+<br><br>
+<em>This quote was generated automatically by the BNG Optimiser system on {pd.Timestamp.now().strftime('%d/%m/%Y at %H:%M')}.</em>
+    """
+    
+    return report_df, email_body
+
+# Add this to your optimization results section (after the downloads):
+if 'alloc_df' in locals() and not alloc_df.empty:
+    st.markdown("---")
+    st.markdown("#### 📧 Client Report Generation")
+    
+    with st.expander("Generate Client Email Report", expanded=False):
+        st.markdown("**Generate a client-facing report table and email:**")
+        
+        # Generate the report
+        client_table, email_html = generate_client_report_table(alloc_df, demand_df, total_cost, ADMIN_FEE_GBP)
+        
+        # Display the table
+        st.markdown("**Client Report Table:**")
+        
+        # Format for display (clean up column names)
+        display_table = client_table.copy()
+        display_table = display_table.rename(columns={
+            "Distinctiveness_Supply": "Supply Distinctiveness",
+            "# Units_Supply": "Supply Units"
+        })
+        
+        # Remove empty development impact columns for display
+        cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
+                       "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
+                       "Price Per Unit", "Offset Cost"]
+        
+        st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
+        
+        # Email generation
+        st.markdown("**📧 Email Generation:**")
+        
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            if st.button("📋 Copy Email to Clipboard", help="Copy the email HTML to clipboard"):
+                st.code(email_html, language="html")
+                st.success("Email HTML generated! Copy the code above and paste into your email client.")
+        
+        with col2:
+            # Create mailto link
+            project_name = st.session_state.get("project_name_email", "[Project Name]")
+            subject = f"Biodiversity Net Gain Offset Proposal - {project_name}"
+            
+            # Create simplified email body for mailto (HTML doesn't work well in mailto)
+            simple_table = "BIODIVERSITY NET GAIN OFFSET PROPOSAL\n\n"
+            for _, row in client_table[:-1].iterrows():
+                if row["Habitats Supplied"] == "Planning Discharge Pack":
+                    simple_table += f"Planning Discharge Pack: {row['Offset Cost']}\n"
+                else:
+                    simple_table += f"{row['Distinctiveness']} {row['Habitats Lost']} ({row['# Units']} units) -> {row['Distinctiveness_Supply']} {row['Habitats Supplied']} ({row['# Units_Supply']} units) @ {row['Price Per Unit']} = {row['Offset Cost']}\n"
+            
+            total_row = client_table.iloc[-1]
+            simple_table += f"\nTOTAL: {total_row['# Units']} units required -> {total_row['# Units_Supply']} units supplied = {total_row['Offset Cost']}"
+            
+            mailto_link = f"mailto:?subject={subject}&body={simple_table}"
+            
+            st.markdown(f"[📧 Open Email Client]({mailto_link})")
+        
+        # Download options
+        st.markdown("**📥 Download Options:**")
+        
+        col3, col4 = st.columns([1, 1])
+        
+        with col3:
+            # Download as CSV
+            csv_data = display_table[cols_to_show].to_csv(index=False)
+            st.download_button(
+                "Download Client Table (CSV)",
+                data=csv_data,
+                file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv"
+            )
+        
+        with col4:
+            # Download email HTML
+            st.download_button(
+                "Download Email HTML",
+                data=email_html,
+                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
+                mime="text/html"
+            )
         
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
