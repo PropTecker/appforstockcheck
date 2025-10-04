@@ -2061,7 +2061,6 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
 
 
 # Add this to your optimization results section (after the downloads):
-# Add this to your optimization results section (after the downloads):
 if (st.session_state.get("optimization_complete", False) and 
     isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
     not st.session_state["last_alloc_df"].empty):
@@ -2084,9 +2083,21 @@ if (st.session_state.get("optimization_complete", False) and
     with st.expander("Generate Client Email Report", expanded=False):
         st.markdown("**Generate a client-facing report table and email:**")
         
-        # Generate the report using session data
-        client_table, email_html = generate_client_report_table(
-            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP
+        # ========== INPUTS MOVED OUTSIDE FUNCTION ==========
+        st.markdown("**📝 Email Details:**")
+        col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
+        
+        with col_input1:
+            client_name = st.text_input("Client Name", value="INSERT NAME", key="email_client_name_input")
+        with col_input2:
+            ref_number = st.text_input("Reference Number", value="BNG00XXX", key="email_ref_number_input")
+        with col_input3:
+            location = st.text_input("Development Location", value="INSERT LOCATION", key="email_location_input")
+        
+        # Generate the report using session data and input values
+        client_table, email_html = generate_client_report_table_fixed(
+            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
+            client_name, ref_number, location  # Pass the input values
         )
         
         # Display the table
@@ -2118,11 +2129,6 @@ if (st.session_state.get("optimization_complete", False) and
                 st.success("Email HTML generated! Copy the code above and paste into your email client.")
         
         with col2:
-            # Create mailto link
-            client_name = st.session_state.get("client_name_email", "INSERT NAME")
-            ref_number = st.session_state.get("ref_number_email", "BNG00XXX")
-            location = st.session_state.get("location_email", "INSERT LOCATION")
-            
             subject = f"BNG Quote {ref_number} - {location}"
             total_with_admin = session_total_cost + ADMIN_FEE_GBP
             simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
@@ -2143,7 +2149,7 @@ if (st.session_state.get("optimization_complete", False) and
                     data=csv_data,
                     file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
                     mime="text/csv",
-                    key="download_client_table_csv"  # Added unique key
+                    key="download_client_table_csv"
                 )
         
         with col4:
@@ -2152,7 +2158,7 @@ if (st.session_state.get("optimization_complete", False) and
                 data=email_html,
                 file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
                 mime="text/html",
-                key="download_email_html"  # Added unique key
+                key="download_email_html"
             )
         
 # Debug section (temporary - can remove later)
