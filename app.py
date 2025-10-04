@@ -1789,354 +1789,354 @@ if run:
 
 
 # ================= Fixed Email Report Generation Function =================
-    def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
-                                           client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
-        """Generate the client-facing report table and email body matching exact template with improved styling"""
+def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
+                                       client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
+    """Generate the client-facing report table and email body matching exact template with improved styling"""
+    
+    # Separate by habitat types
+    area_habitats = []
+    hedgerow_habitats = []
+    watercourse_habitats = []
+    
+    # Process each demand
+    for _, demand_row in demand_df.iterrows():
+        demand_habitat = demand_row["habitat_name"]
+        demand_units = demand_row["units_required"]
         
-        # Separate by habitat types
-        area_habitats = []
-        hedgerow_habitats = []
-        watercourse_habitats = []
+        # Find corresponding allocation(s)
+        matching_allocs = alloc_df[alloc_df["demand_habitat"] == demand_habitat]
         
-        # Process each demand
-        for _, demand_row in demand_df.iterrows():
-            demand_habitat = demand_row["habitat_name"]
-            demand_units = demand_row["units_required"]
+        if matching_allocs.empty:
+            continue
             
-            # Find corresponding allocation(s)
-            matching_allocs = alloc_df[alloc_df["demand_habitat"] == demand_habitat]
+        for _, alloc_row in matching_allocs.iterrows():
+            # Determine demand distinctiveness
+            if demand_habitat == NET_GAIN_LABEL:
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any"
+            else:
+                # Look up from catalog
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
+                if not cat_match.empty:
+                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    demand_habitat_display = demand_habitat
+                else:
+                    demand_distinctiveness = "Medium"  # Default
+                    demand_habitat_display = demand_habitat
             
-            if matching_allocs.empty:
-                continue
-                
-            for _, alloc_row in matching_allocs.iterrows():
-                # Determine demand distinctiveness
-                if demand_habitat == NET_GAIN_LABEL:
-                    demand_distinctiveness = "10% Net Gain"
-                    demand_habitat_display = "Any"
-                else:
-                    # Look up from catalog
-                    cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
-                    if not cat_match.empty:
-                        demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
-                        demand_habitat_display = demand_habitat
-                    else:
-                        demand_distinctiveness = "Medium"  # Default
-                        demand_habitat_display = demand_habitat
-                
-                # Supply info
-                supply_habitat = alloc_row["supply_habitat"]
-                supply_units = alloc_row["units_supplied"]
-                unit_price = alloc_row["unit_price"]
-                offset_cost = alloc_row["cost"]
-                
-                # Determine supply distinctiveness
-                supply_cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == supply_habitat]
-                if not supply_cat_match.empty:
-                    supply_distinctiveness = supply_cat_match["distinctiveness_name"].iloc[0]
-                else:
-                    supply_distinctiveness = "Medium"  # Default
-                
-                row_data = {
-                    "Distinctiveness": demand_distinctiveness,
-                    "Habitats Lost": demand_habitat_display,
-                    "# Units": f"{demand_units:.2f}",
-                    "Distinctiveness_Supply": supply_distinctiveness,
-                    "Habitats Supplied": supply_habitat,
-                    "# Units_Supply": f"{supply_units:.2f}",
-                    "Price Per Unit": f"£{unit_price:,.0f}",
-                    "Offset Cost": f"£{offset_cost:,.0f}"
-                }
-                
-                # Categorize by habitat type
-                if "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
-                    hedgerow_habitats.append(row_data)
-                elif "watercourse" in demand_habitat.lower() or "water" in supply_habitat.lower():
-                    watercourse_habitats.append(row_data)
-                else:
-                    area_habitats.append(row_data)
-        
-        total_with_admin = total_cost + admin_fee
-        
-        # Build HTML table with improved styling (30% narrower, better colors)
-        html_table = """
-        <table border="1" style="border-collapse: collapse; width: 70%; margin: 0 auto; font-family: Arial, sans-serif; font-size: 11px;">
-            <thead>
-                <tr>
-                    <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Development Impact</th>
-                    <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
-                </tr>
-                <tr>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Distinctiveness</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Habitats Lost</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;"># Units</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Distinctiveness</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Habitats Supplied</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;"># Units</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Price Per Unit</th>
-                    <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Offset Cost</th>
-                </tr>
-            </thead>
-            <tbody>
-        """
-        
-        # Add Area Habitats section with light green background
-        if area_habitats:
-            html_table += """
-                <tr style="background-color: #90EE90;">
-                    <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Area Habitats</td>
-                </tr>
-            """
-            for habitat in area_habitats:
-                html_table += f"""
-                <tr>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
-                </tr>
-                """
-        
-        # Add Hedgerow Habitats section with light green background
-        if hedgerow_habitats:
-            html_table += """
-                <tr style="background-color: #90EE90;">
-                    <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Hedgerow Habitats</td>
-                </tr>
-            """
-            for habitat in hedgerow_habitats:
-                html_table += f"""
-                <tr>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
-                </tr>
-                """
-        
-        # Add Watercourse Habitats section with light green background
-        if watercourse_habitats:
-            html_table += """
-                <tr style="background-color: #90EE90;">
-                    <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Watercourse Habitats</td>
-                </tr>
-            """
-            for habitat in watercourse_habitats:
-                html_table += f"""
-                <tr>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
-                    <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
-                </tr>
-                """
-        
-        # Add Spatial Risk Multiplier section (placeholder)
+            # Supply info
+            supply_habitat = alloc_row["supply_habitat"]
+            supply_units = alloc_row["units_supplied"]
+            unit_price = alloc_row["unit_price"]
+            offset_cost = alloc_row["cost"]
+            
+            # Determine supply distinctiveness
+            supply_cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == supply_habitat]
+            if not supply_cat_match.empty:
+                supply_distinctiveness = supply_cat_match["distinctiveness_name"].iloc[0]
+            else:
+                supply_distinctiveness = "Medium"  # Default
+            
+            row_data = {
+                "Distinctiveness": demand_distinctiveness,
+                "Habitats Lost": demand_habitat_display,
+                "# Units": f"{demand_units:.2f}",
+                "Distinctiveness_Supply": supply_distinctiveness,
+                "Habitats Supplied": supply_habitat,
+                "# Units_Supply": f"{supply_units:.2f}",
+                "Price Per Unit": f"£{unit_price:,.0f}",
+                "Offset Cost": f"£{offset_cost:,.0f}"
+            }
+            
+            # Categorize by habitat type
+            if "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
+                hedgerow_habitats.append(row_data)
+            elif "watercourse" in demand_habitat.lower() or "water" in supply_habitat.lower():
+                watercourse_habitats.append(row_data)
+            else:
+                area_habitats.append(row_data)
+    
+    total_with_admin = total_cost + admin_fee
+    
+    # Build HTML table with improved styling (30% narrower, better colors)
+    html_table = """
+    <table border="1" style="border-collapse: collapse; width: 70%; margin: 0 auto; font-family: Arial, sans-serif; font-size: 11px;">
+        <thead>
+            <tr>
+                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Development Impact</th>
+                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
+            </tr>
+            <tr>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Offset Cost</th>
+            </tr>
+        </thead>
+        <tbody>
+    """
+    
+    # Add Area Habitats section with light green background
+    if area_habitats:
         html_table += """
             <tr style="background-color: #90EE90;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
-            </tr>
-            <tr>
-                <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
-                <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-            </tr>
-            <tr>
-                <td colspan="4" style="padding: 6px; border: 1px solid #000;">Hedgerow Habitats</td>
-                <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-            </tr>
-            <tr>
-                <td colspan="4" style="padding: 6px; border: 1px solid #000;">Watercourse Habitats</td>
-                <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Area Habitats</td>
             </tr>
         """
-        
-        # Add Planning Discharge Pack and Total
-        html_table += f"""
+        for habitat in area_habitats:
+            html_table += f"""
             <tr>
-                <td colspan="7" style="padding: 6px; border: 1px solid #000; text-align: right; font-weight: bold;">Planning Discharge Pack</td>
-                <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{admin_fee:,.0f}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
             </tr>
-            <tr style="background-color: #f0f0f0; font-weight: bold;">
-                <td style="padding: 6px; border: 1px solid #000;">Total</td>
-                <td style="padding: 6px; border: 1px solid #000;"></td>
-                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{demand_df['units_required'].sum():.2f}</td>
-                <td style="padding: 6px; border: 1px solid #000;"></td>
-                <td style="padding: 6px; border: 1px solid #000;"></td>
-                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{alloc_df['units_supplied'].sum():.2f}</td>
-                <td style="padding: 6px; border: 1px solid #000;"></td>
-                <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{total_with_admin:,.0f}</td>
+            """
+    
+    # Add Hedgerow Habitats section with light green background
+    if hedgerow_habitats:
+        html_table += """
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Hedgerow Habitats</td>
             </tr>
-        </tbody>
-        </table>
         """
-        
-        # Determine next steps based on amount (programmatic ending)
-        if total_with_admin < 10000:
-            next_steps = """<strong>Next Steps</strong>
-    <br><br>
-    BNG is a pre-commencement, not a pre-planning, condition.
-    <br><br>
-    To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-    <br><br>
-    Once you sign the agreement, pay the settlement fee and provide us with your metric and decision notice we will allocate the units to you.
-    <br><br>
-    If you have any questions, please reply to this email or call 01962 436574."""
-        else:
-            next_steps = """<strong>Next Steps</strong>
-    <br><br>
-    BNG is a pre-commencement, not a pre-planning, condition.
-    <br><br>
-    To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-    <br><br>
-    We offer two contract options:
-    <br><br>
-    1. <strong>Buy It Now:</strong> Pay in full on signing; units allocated immediately.<br>
-    2. <strong>Reservation & Purchase:</strong> Pay a reservation fee to hold units for up to 6 months, with the option to draw them down anytime in that period.
-    <br><br>
-    If you have any questions, please reply to this email or call 01962 436574."""
-        
-        # Generate full email body matching exact template
-        email_body = f"""
-    <div style="font-family: Arial, sans-serif; font-size: 12px; line-height: 1.4;">
+        for habitat in hedgerow_habitats:
+            html_table += f"""
+            <tr>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
+            </tr>
+            """
     
-    <strong>Dear {client_name}</strong>
-    <br><br>
-    <strong>Our Ref: {ref_number}</strong>
-    <br><br>
-    Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
-    <br><br>
-    Thank you for enquiring about BNG Units for your development in {location}
-    <br><br>
-    <strong>About Us</strong>
-    <br><br>
-    Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance. We create and manage a large portfolio of nature recovery projects, owning the freehold to all mitigation land for the highest integrity and long-term assurance.
-    <br><br>
-    Our key advantages:
-    <br><br>
-    1. <strong>Permanent Nature Recovery:</strong> We dedicate all land to conservation in perpetuity, not just for the 30-year minimum.<br>
-    2. <strong>Independently Managed Endowment:</strong> Long-term management funds are fully insured and overseen by independent asset managers.<br>
-    3. <strong>Independent Governance:</strong> Leading third-party ecologists and contractors oversee all monitoring and habitat management, ensuring objectivity.<br>
-    4. <strong>Full Ownership and Responsibility:</strong> We hold the freehold and assume complete responsibility for all delivery and management - no ambiguity.
-    <br><br>
-    <strong>Your Quote - £{total_with_admin:,.0f} + VAT</strong>
-    <br><br>
-    See a detailed breakdown of the pricing below. I've attached a PDF outlining the BNG offset and condition discharge process. If you have any questions, please let us know—we're here to help.
-    <br><br>
-    
-    {html_table}
-    
-    <br><br>
-    Prices exclude VAT. Any legal costs for contract amendments will be charged to the client and must be paid before allocation.
-    <br><br>
-    {next_steps}
-    
-    </div>
+    # Add Watercourse Habitats section with light green background
+    if watercourse_habitats:
+        html_table += """
+            <tr style="background-color: #90EE90;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Watercourse Habitats</td>
+            </tr>
         """
-        
-        # Create simplified dataframe for display
-        all_habitats = area_habitats + hedgerow_habitats + watercourse_habitats
-        report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
-        
-        return report_df, email_body
+        for habitat in watercourse_habitats:
+            html_table += f"""
+            <tr>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Lost"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Distinctiveness_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000;">{habitat["Habitats Supplied"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["# Units_Supply"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Price Per Unit"]}</td>
+                <td style="padding: 6px; border: 1px solid #000; text-align: right;">{habitat["Offset Cost"]}</td>
+            </tr>
+            """
+    
+    # Add Spatial Risk Multiplier section (placeholder)
+    html_table += """
+        <tr style="background-color: #90EE90;">
+            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
+        </tr>
+        <tr>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+        </tr>
+        <tr>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Hedgerow Habitats</td>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+        </tr>
+        <tr>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Watercourse Habitats</td>
+            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
+        </tr>
+    """
+    
+    # Add Planning Discharge Pack and Total
+    html_table += f"""
+        <tr>
+            <td colspan="7" style="padding: 6px; border: 1px solid #000; text-align: right; font-weight: bold;">Planning Discharge Pack</td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{admin_fee:,.0f}</td>
+        </tr>
+        <tr style="background-color: #f0f0f0; font-weight: bold;">
+            <td style="padding: 6px; border: 1px solid #000;">Total</td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{demand_df['units_required'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{alloc_df['units_supplied'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000;"></td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{total_with_admin:,.0f}</td>
+        </tr>
+    </tbody>
+    </table>
+    """
+    
+    # Determine next steps based on amount (programmatic ending)
+    if total_with_admin < 10000:
+        next_steps = """<strong>Next Steps</strong>
+<br><br>
+BNG is a pre-commencement, not a pre-planning, condition.
+<br><br>
+To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+<br><br>
+Once you sign the agreement, pay the settlement fee and provide us with your metric and decision notice we will allocate the units to you.
+<br><br>
+If you have any questions, please reply to this email or call 01962 436574."""
+    else:
+        next_steps = """<strong>Next Steps</strong>
+<br><br>
+BNG is a pre-commencement, not a pre-planning, condition.
+<br><br>
+To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+<br><br>
+We offer two contract options:
+<br><br>
+1. <strong>Buy It Now:</strong> Pay in full on signing; units allocated immediately.<br>
+2. <strong>Reservation & Purchase:</strong> Pay a reservation fee to hold units for up to 6 months, with the option to draw them down anytime in that period.
+<br><br>
+If you have any questions, please reply to this email or call 01962 436574."""
+    
+    # Generate full email body matching exact template
+    email_body = f"""
+<div style="font-family: Arial, sans-serif; font-size: 12px; line-height: 1.4;">
+
+<strong>Dear {client_name}</strong>
+<br><br>
+<strong>Our Ref: {ref_number}</strong>
+<br><br>
+Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+<br><br>
+Thank you for enquiring about BNG Units for your development in {location}
+<br><br>
+<strong>About Us</strong>
+<br><br>
+Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance. We create and manage a large portfolio of nature recovery projects, owning the freehold to all mitigation land for the highest integrity and long-term assurance.
+<br><br>
+Our key advantages:
+<br><br>
+1. <strong>Permanent Nature Recovery:</strong> We dedicate all land to conservation in perpetuity, not just for the 30-year minimum.<br>
+2. <strong>Independently Managed Endowment:</strong> Long-term management funds are fully insured and overseen by independent asset managers.<br>
+3. <strong>Independent Governance:</strong> Leading third-party ecologists and contractors oversee all monitoring and habitat management, ensuring objectivity.<br>
+4. <strong>Full Ownership and Responsibility:</strong> We hold the freehold and assume complete responsibility for all delivery and management - no ambiguity.
+<br><br>
+<strong>Your Quote - £{total_with_admin:,.0f} + VAT</strong>
+<br><br>
+See a detailed breakdown of the pricing below. I've attached a PDF outlining the BNG offset and condition discharge process. If you have any questions, please let us know—we're here to help.
+<br><br>
+
+{html_table}
+
+<br><br>
+Prices exclude VAT. Any legal costs for contract amendments will be charged to the client and must be paid before allocation.
+<br><br>
+{next_steps}
+
+</div>
+    """
+    
+    # Create simplified dataframe for display
+    all_habitats = area_habitats + hedgerow_habitats + watercourse_habitats
+    report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
+    
+    return report_df, email_body
         
         # Email generation
         # Enhanced email generation with .eml file creation:
-        st.markdown("**📧 Email Generation:**")
-        
-        col1, col2, col3 = st.columns([1, 1, 1])
-        
-        with col1:
-            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-                st.code(email_html, language="html")
-                st.success("Email HTML generated! Copy the code above and paste into your email client.")
-        
-        with col2:
-            # Create .eml file content
-            import base64
-            from email.mime.multipart import MIMEMultipart
-            from email.mime.text import MIMEText
-            
-            subject = f"BNG Quote {ref_number} - {location}"
-            total_with_admin = session_total_cost + ADMIN_FEE_GBP
-            
-            # Create email message
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
-            msg['To'] = ''  # Will be filled by user
-            
-            # Create text version for email clients that don't support HTML
-            text_body = f"""Dear {client_name}
-        
-        Our Ref: {ref_number}
-        
-        Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
-        
-        Thank you for enquiring about BNG Units for your development in {location}
-        
-        About Us
-        
-        Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
-        
-        Your Quote - £{total_with_admin:,.0f} + VAT
-        
-        [Please view the HTML version of this email for the detailed pricing breakdown table]
-        
-        Total Units Required: {session_demand_df['units_required'].sum():.2f}
-        Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
-        Total Cost: £{total_with_admin:,.0f} + VAT
-        
-        Next Steps
-        BNG is a pre-commencement, not a pre-planning, condition.
-        
-        To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-        
-        If you have any questions, please reply to this email or call 01962 436574.
-        
-        Best regards,
-        Wild Capital Team"""
-            
-            # Attach text and HTML versions
-            text_part = MIMEText(text_body, 'plain')
-            html_part = MIMEText(email_html, 'html')
-            
-            msg.attach(text_part)
-            msg.attach(html_part)
-            
-            # Convert to string
-            eml_content = msg.as_string()
-            
-            # Download button for .eml file
-            st.download_button(
-                "📧 Download Email (.eml)",
-                data=eml_content,
-                file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-                mime="message/rfc822",
-                help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-            )
-        
-        with col3:
-            # Simple mailto fallback
-            import urllib.parse
-            
-            encoded_subject = urllib.parse.quote(subject)
-            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
-            encoded_simple = urllib.parse.quote(simple_body)
-            
-            mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
-            st.markdown(f"[📧 Quick Email]({mailto_link})")
+st.markdown("**📧 Email Generation:**")
+
+col1, col2, col3 = st.columns([1, 1, 1])
+
+with col1:
+    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
+        st.code(email_html, language="html")
+        st.success("Email HTML generated! Copy the code above and paste into your email client.")
+
+with col2:
+    # Create .eml file content
+    import base64
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    
+    subject = f"BNG Quote {ref_number} - {location}"
+    total_with_admin = session_total_cost + ADMIN_FEE_GBP
+    
+    # Create email message
+    msg = MIMEMultipart('alternative')
+    msg['Subject'] = subject
+    msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+    msg['To'] = ''  # Will be filled by user
+    
+    # Create text version for email clients that don't support HTML
+    text_body = f"""Dear {client_name}
+
+Our Ref: {ref_number}
+
+Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+
+Thank you for enquiring about BNG Units for your development in {location}
+
+About Us
+
+Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
+
+Your Quote - £{total_with_admin:,.0f} + VAT
+
+[Please view the HTML version of this email for the detailed pricing breakdown table]
+
+Total Units Required: {session_demand_df['units_required'].sum():.2f}
+Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
+Total Cost: £{total_with_admin:,.0f} + VAT
+
+Next Steps
+BNG is a pre-commencement, not a pre-planning, condition.
+
+To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+
+If you have any questions, please reply to this email or call 01962 436574.
+
+Best regards,
+Wild Capital Team"""
+    
+    # Attach text and HTML versions
+    text_part = MIMEText(text_body, 'plain')
+    html_part = MIMEText(email_html, 'html')
+    
+    msg.attach(text_part)
+    msg.attach(html_part)
+    
+    # Convert to string
+    eml_content = msg.as_string()
+    
+    # Download button for .eml file
+    st.download_button(
+        "📧 Download Email (.eml)",
+        data=eml_content,
+        file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+        mime="message/rfc822",
+        help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+    )
+
+with col3:
+    # Simple mailto fallback
+    import urllib.parse
+    
+    encoded_subject = urllib.parse.quote(subject)
+    simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+    encoded_simple = urllib.parse.quote(simple_body)
+    
+    mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
+    st.markdown(f"[📧 Quick Email]({mailto_link})")
                     
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
