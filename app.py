@@ -2061,32 +2061,51 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
 
 
 # Add this to your optimization results section (after the downloads):
-if 'alloc_df' in locals() and not alloc_df.empty:
+if (st.session_state.get("optimization_complete", False) and 
+    isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
+    not st.session_state["last_alloc_df"].empty):
+    
+    # Get data from session state
+    session_alloc_df = st.session_state["last_alloc_df"]
+    
+    # Reconstruct demand_df from session state
+    session_demand_df = pd.DataFrame(
+        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
+         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
+    )
+    
+    # Calculate total cost from session data
+    session_total_cost = session_alloc_df["cost"].sum()
+    
     st.markdown("---")
     st.markdown("#### 📧 Client Report Generation")
     
     with st.expander("Generate Client Email Report", expanded=False):
         st.markdown("**Generate a client-facing report table and email:**")
         
-        # Generate the report
-        client_table, email_html = generate_client_report_table(alloc_df, demand_df, total_cost, ADMIN_FEE_GBP)
+        # Generate the report using session data
+        client_table, email_html = generate_client_report_table(
+            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP
+        )
         
+        # Rest of your existing email generation code...
         # Display the table
         st.markdown("**Client Report Table:**")
         
         # Format for display (clean up column names)
-        display_table = client_table.copy()
-        display_table = display_table.rename(columns={
-            "Distinctiveness_Supply": "Supply Distinctiveness",
-            "# Units_Supply": "Supply Units"
-        })
-        
-        # Remove empty development impact columns for display
-        cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
-                       "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
-                       "Price Per Unit", "Offset Cost"]
-        
-        st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
+        if not client_table.empty:
+            display_table = client_table.copy()
+            display_table = display_table.rename(columns={
+                "Distinctiveness_Supply": "Supply Distinctiveness",
+                "# Units_Supply": "Supply Units"
+            })
+            
+            # Remove empty development impact columns for display
+            cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
+                           "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
+                           "Price Per Unit", "Offset Cost"]
+            
+            st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
         
         # Email generation
         st.markdown("**📧 Email Generation:**")
@@ -2094,14 +2113,45 @@ if 'alloc_df' in locals() and not alloc_df.empty:
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("📋 Copy Email to Clipboard", help="Copy the email HTML to clipboard"):
+            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard"):
                 st.code(email_html, language="html")
                 st.success("Email HTML generated! Copy the code above and paste into your email client.")
         
         with col2:
             # Create mailto link
-            project_name = st.session_state.get("project_name_email", "[Project Name]")
-            subject = f"Biodiversity Net Gain Offset Proposal - {project_name}"
+            client_name = st.session_state.get("client_name_email", "INSERT NAME")
+            ref_number = st.session_state.get("ref_number_email", "BNG00XXX")
+            location = st.session_state.get("location_email", "INSERT LOCATION")
+            
+            subject = f"BNG Quote {ref_number} - {location}"
+            total_with_admin = session_total_cost + ADMIN_FEE_GBP
+            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+            
+            mailto_link = f"mailto:?subject={subject}&body={simple_body}"
+            st.markdown(f"[📧 Open Email Client]({mailto_link})")
+        
+        # Download options
+        st.markdown("**📥 Download Options:**")
+        
+        col3, col4 = st.columns([1, 1])
+        
+        with col3:
+            if not client_table.empty:
+                csv_data = display_table[cols_to_show].to_csv(index=False)
+                st.download_button(
+                    "Download Client Table (CSV)",
+                    data=csv_data,
+                    file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+        
+        with col4:
+            st.download_button(
+                "Download Email HTML",
+                data=email_html,
+                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
+                mime="text/html"
+            )
             
             # Create simplified email body for mailto (HTML doesn't work well in mailto)
             simple_table = "BIODIVERSITY NET GAIN OFFSET PROPOSAL\n\n"
