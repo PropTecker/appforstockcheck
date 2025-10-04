@@ -1672,6 +1672,210 @@ if run:
         if "price_source" in alloc_df.columns:
             st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
 
+        # ========== COMPREHENSIVE PRICING BREAKDOWN ==========
+        st.markdown("---")
+        st.markdown("#### 📊 Comprehensive Pricing Analysis")
+        
+        # 1. PRICING SOURCE DETAILED BREAKDOWN
+        st.markdown("##### 🎯 Pricing Source Analysis")
+        
+        pricing_detail = []
+        for _, row in alloc_df.iterrows():
+            pricing_detail.append({
+                "Bank": row["bank_name"],
+                "Demand Habitat": row["demand_habitat"],
+                "Supply Habitat": row["supply_habitat"],
+                "Units": f"{row['units_supplied']:.2f}",
+                "Unit Price": f"£{row['unit_price']:,.0f}",
+                "Total Cost": f"£{row['cost']:,.0f}",
+                "Pricing Source": row["price_source"],
+                "Price Habitat Used": row["price_habitat"],
+                "Tier": row["tier"],
+                "Allocation Type": row["allocation_type"]
+            })
+        
+        pricing_df = pd.DataFrame(pricing_detail)
+        st.dataframe(pricing_df, use_container_width=True, hide_index=True)
+        
+        # Pricing source explanations
+        st.markdown("**Pricing Source Legend:**")
+        pricing_sources = {
+            "exact": "✅ **Exact Match** - Found exact pricing for this habitat, bank, and tier",
+            "group-proxy": "🔄 **Group Proxy** - Used same habitat group or higher distinctiveness pricing", 
+            "any-low-proxy": "⚡ **Low Proxy** - Used cheapest available pricing for this bank/tier (Low distinctiveness rule)"
+        }
+        
+        source_counts = alloc_df["price_source"].value_counts()
+        for source, count in source_counts.items():
+            if source in pricing_sources:
+                st.caption(f"{pricing_sources[source]} ({count} allocation{'s' if count != 1 else ''})")
+        
+        # 2. PAIRED HABITAT DETAILED BREAKDOWN
+        paired_allocs = alloc_df[alloc_df["allocation_type"] == "paired"].copy()
+        if not paired_allocs.empty:
+            st.markdown("##### 🌳 Paired Habitat Breakdown (Orchard + Scrub)")
+            
+            paired_expanded = []
+            for _, row in paired_allocs.iterrows():
+                try:
+                    parts = json.loads(row.get("paired_parts", "[]"))
+                    if len(parts) == 2:
+                        total_units = row['units_supplied']
+                        units_each = total_units / 2
+                        
+                        for part in parts:
+                            habitat_name = part.get("habitat", "Unknown")
+                            unit_price = part.get("unit_price", 0)
+                            cost_this = units_each * unit_price
+                            
+                            paired_expanded.append({
+                                "Bank": row["bank_name"],
+                                "Demand": row["demand_habitat"],
+                                "Individual Habitat": habitat_name,
+                                "Units (this habitat)": f"{units_each:.2f}",
+                                "Unit Price": f"£{unit_price:,.0f}",
+                                "Cost (this habitat)": f"£{cost_this:,.0f}",
+                                "Tier": row["tier"],
+                                "Combined Supply": row["supply_habitat"],
+                                "Total Paired Cost": f"£{row['cost']:,.0f}"
+                            })
+                except Exception as e:
+                    st.warning(f"Could not parse paired details for {row['bank_name']}: {e}")
+            
+            if paired_expanded:
+                paired_df = pd.DataFrame(paired_expanded)
+                st.dataframe(paired_df, use_container_width=True, hide_index=True)
+                
+                st.info("""
+                **Paired Habitat Rules:**
+                - Used for Medium distinctiveness demands at Far tier
+                - 50% Traditional Orchard + 50% Scrub/Mixed Scrub
+                - Each habitat priced separately then combined
+                - Provides cost-effective solution for medium distinctiveness requirements
+                """)
+        
+        # 3. BANK-BY-BANK DETAILED ANALYSIS
+        st.markdown("##### 🏦 Bank-by-Bank Analysis")
+        
+        for bank_key in alloc_df["BANK_KEY"].unique():
+            bank_allocs = alloc_df[alloc_df["BANK_KEY"] == bank_key].copy()
+            bank_name = bank_allocs["bank_name"].iloc[0]
+            total_bank_cost = bank_allocs["cost"].sum()
+            total_bank_units = bank_allocs["units_supplied"].sum()
+            
+            # Get bank location info
+            bank_info = backend["Banks"][backend["Banks"]["BANK_KEY"] == bank_key]
+            if not bank_info.empty:
+                bank_data = bank_info.iloc[0]
+                bank_lpa = bank_data.get("lpa_name", "Unknown")
+                bank_nca = bank_data.get("nca_name", "Unknown")
+            else:
+                bank_lpa = bank_nca = "Unknown"
+            
+            with st.expander(f"🏢 {bank_name} - £{total_bank_cost:,.0f} ({total_bank_units:.2f} units)", expanded=False):
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("**Bank Location:**")
+                    st.write(f"📍 LPA: {bank_lpa}")
+                    st.write(f"🌿 NCA: {bank_nca}")
+                    st.write(f"🎯 Tier: {bank_allocs['tier'].iloc[0]}")
+                
+                with col2:
+                    st.markdown("**Bank Totals:**")
+                    st.metric("Total Cost", f"£{total_bank_cost:,.0f}")
+                    st.metric("Total Units", f"{total_bank_units:.2f}")
+                    st.metric("Avg Unit Price", f"£{total_bank_cost/total_bank_units:,.0f}")
+                
+                st.markdown("**Habitat Details:**")
+                bank_detail = []
+                for _, alloc in bank_allocs.iterrows():
+                    bank_detail.append({
+                        "Demand": alloc["demand_habitat"],
+                        "Supply": alloc["supply_habitat"],
+                        "Type": alloc["allocation_type"],
+                        "Units": f"{alloc['units_supplied']:.2f}",
+                        "Unit Price": f"£{alloc['unit_price']:,.0f}",
+                        "Cost": f"£{alloc['cost']:,.0f}",
+                        "Pricing": alloc["price_source"]
+                    })
+                
+                bank_df = pd.DataFrame(bank_detail)
+                st.dataframe(bank_df, use_container_width=True, hide_index=True)
+        
+        # 4. TIER AND SPATIAL ANALYSIS
+        st.markdown("##### 📍 Spatial Tier Analysis")
+        
+        tier_summary = alloc_df.groupby("tier").agg({
+            "units_supplied": "sum",
+            "cost": "sum",
+            "BANK_KEY": "nunique"
+        }).reset_index()
+        tier_summary["avg_unit_price"] = tier_summary["cost"] / tier_summary["units_supplied"]
+        tier_summary.columns = ["Tier", "Total Units", "Total Cost", "Banks Used", "Avg Unit Price"]
+        tier_summary["Total Cost"] = tier_summary["Total Cost"].apply(lambda x: f"£{x:,.0f}")
+        tier_summary["Avg Unit Price"] = tier_summary["Avg Unit Price"].apply(lambda x: f"£{x:,.0f}")
+        
+        st.dataframe(tier_summary, use_container_width=True, hide_index=True)
+        
+        # Spatial multiplier explanation
+        st.info("""
+        **Spatial Risk Multipliers (applied to effective units):**
+        - 🟢 **Local** (1.0x): Same LPA or NCA as target site
+        - 🟡 **Adjacent** (1.33x): Neighboring LPA or NCA to target site  
+        - 🔴 **Far** (2.0x): Distant from target site
+        
+        *Note: Multipliers affect effective habitat delivery, not unit pricing*
+        """)
+        
+        # 5. EFFECTIVE UNITS CALCULATION
+        st.markdown("##### ⚖️ Effective Units Analysis")
+        
+        MULT = {"local": 1.0, "adjacent": 1.33, "far": 2.0}
+        
+        effective_breakdown = []
+        for _, row in alloc_df.iterrows():
+            multiplier = MULT.get(row["tier"].lower(), 1.0)
+            effective_units = row["units_supplied"] * multiplier
+            
+            effective_breakdown.append({
+                "Bank": row["bank_name"],
+                "Supply Habitat": row["supply_habitat"],
+                "Tier": row["tier"],
+                "Raw Units": f"{row['units_supplied']:.2f}",
+                "Multiplier": f"{multiplier}x",
+                "Effective Units": f"{effective_units:.2f}",
+                "Cost per Effective Unit": f"£{row['cost']/effective_units:,.0f}"
+            })
+        
+        effective_df = pd.DataFrame(effective_breakdown)
+        st.dataframe(effective_df, use_container_width=True, hide_index=True)
+        
+        # 6. OPTIMIZATION SUMMARY
+        st.markdown("##### 🎯 Optimization Summary")
+        
+        optimization_stats = {
+            "Contract Size Selected": size,
+            "Banks Used": f"{alloc_df['BANK_KEY'].nunique()} (max 2 allowed)",
+            "Total Raw Units": f"{alloc_df['units_supplied'].sum():.2f}",
+            "Total Effective Units": f"{sum(row['units_supplied'] * MULT.get(row['tier'].lower(), 1.0) for _, row in alloc_df.iterrows()):.2f}",
+            "Average Unit Price": f"£{total_cost/alloc_df['units_supplied'].sum():,.0f}",
+            "Price Range": f"£{alloc_df['unit_price'].min():,.0f} - £{alloc_df['unit_price'].max():,.0f}"
+        }
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        for i, (metric, value) in enumerate(optimization_stats.items()):
+            with [col1, col2, col3][i % 3]:
+                st.metric(metric, value)
+        
+        st.success("""
+        **Optimization Method:**
+        1. **Cost Minimization** - Found lowest total cost solution
+        2. **Bank Minimization** - Reduced banks used (within 1% cost increase)
+        3. **Final Optimization** - Re-minimized cost with selected banks
+        """)
+
+        
         # ---------- Site/Habitat totals (effective units, with accurate split pricing) ----------
         st.markdown("#### Site/Habitat totals (effective units)")
 
