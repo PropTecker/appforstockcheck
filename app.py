@@ -1798,7 +1798,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     hedgerow_habitats = []
     watercourse_habitats = []
     
-    # Process each demand (same logic as before)
+    # Process each demand
     for _, demand_row in demand_df.iterrows():
         demand_habitat = demand_row["habitat_name"]
         demand_units = demand_row["units_required"]
@@ -1982,11 +1982,6 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     </table>
     """
     
-    # Rest of the function remains the same...
-    # (email body generation continues as before)
-    
-    # [Include the rest of the email body generation here - the next_steps logic and email_body assembly]
-    
     # Determine next steps based on amount (programmatic ending)
     if total_with_admin < 10000:
         next_steps = """<strong>Next Steps</strong>
@@ -2154,9 +2149,10 @@ if (st.session_state.get("optimization_complete", False) and
             st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
         
         # Email generation
+        # Enhanced email generation with .eml file creation:
         st.markdown("**📧 Email Generation:**")
         
-        col1, col2 = st.columns([1, 1])
+        col1, col2, col3 = st.columns([1, 1, 1])
         
         with col1:
             if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
@@ -2164,37 +2160,80 @@ if (st.session_state.get("optimization_complete", False) and
                 st.success("Email HTML generated! Copy the code above and paste into your email client.")
         
         with col2:
+            # Create .eml file content
+            import base64
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            
             subject = f"BNG Quote {ref_number} - {location}"
             total_with_admin = session_total_cost + ADMIN_FEE_GBP
-            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
             
-            mailto_link = f"mailto:?subject={subject}&body={simple_body}"
-            st.markdown(f"[📧 Open Email Client]({mailto_link})")
+            # Create email message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+            msg['To'] = ''  # Will be filled by user
+            
+            # Create text version for email clients that don't support HTML
+            text_body = f"""Dear {client_name}
         
-        # Download options
-        st.markdown("**📥 Download Options:**")
+        Our Ref: {ref_number}
         
-        col3, col4 = st.columns([1, 1])
+        Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
+        
+        Thank you for enquiring about BNG Units for your development in {location}
+        
+        About Us
+        
+        Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
+        
+        Your Quote - £{total_with_admin:,.0f} + VAT
+        
+        [Please view the HTML version of this email for the detailed pricing breakdown table]
+        
+        Total Units Required: {session_demand_df['units_required'].sum():.2f}
+        Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
+        Total Cost: £{total_with_admin:,.0f} + VAT
+        
+        Next Steps
+        BNG is a pre-commencement, not a pre-planning, condition.
+        
+        To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
+        
+        If you have any questions, please reply to this email or call 01962 436574.
+        
+        Best regards,
+        Wild Capital Team"""
+            
+            # Attach text and HTML versions
+            text_part = MIMEText(text_body, 'plain')
+            html_part = MIMEText(email_html, 'html')
+            
+            msg.attach(text_part)
+            msg.attach(html_part)
+            
+            # Convert to string
+            eml_content = msg.as_string()
+            
+            # Download button for .eml file
+            st.download_button(
+                "📧 Download Email (.eml)",
+                data=eml_content,
+                file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+                mime="message/rfc822",
+                help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+            )
         
         with col3:
-            if not client_table.empty:
-                csv_data = display_table[cols_to_show].to_csv(index=False)
-                st.download_button(
-                    "Download Client Table (CSV)",
-                    data=csv_data,
-                    file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    key="download_client_table_csv"
-                )
-        
-        with col4:
-            st.download_button(
-                "Download Email HTML",
-                data=email_html,
-                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
-                mime="text/html",
-                key="download_email_html"
-            )
+            # Simple mailto fallback
+            import urllib.parse
+            
+            encoded_subject = urllib.parse.quote(subject)
+            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+            encoded_simple = urllib.parse.quote(simple_body)
+            
+            mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
+            st.markdown(f"[📧 Quick Email]({mailto_link})")
             
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
