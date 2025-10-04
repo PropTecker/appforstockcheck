@@ -1569,10 +1569,12 @@ with map_placeholder:
         try:
             st_folium(fmap_to_show, height=520, use_container_width=True, key=map_key)
         except Exception:
+            # Prefer folium_static (very stable), fall back to st_folium if not available
             if folium_static:
                 folium_static(fmap_to_show, width=None, height=520)
             else:
-                st.info("Map unavailable in this environment.")
+                st_folium(fmap_to_show, height=520, use_container_width=True, key=map_key)
+
     except Exception as e:
         st.warning(f"Map rendering skipped due to an error: {e}")
 
