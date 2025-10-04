@@ -1,15 +1,15 @@
 # app.py — BNG Optimiser (Standalone), v9.7
-# Policies:
-# - Always minimise total cost; no proximity preference.
-# - ≤ 2 sites overall (BANK_KEY).
-# - Prefer a single site if total cost ≤ 1.01 * absolute cheapest.
-# - One option per demand line, except FAR Medium 50/50 Orchard+Scrub (single option).
-# - Low/Net Gain: use exact price rows only (no proxies).
-# - Medium: Local/Adjacent single-habitat; FAR may use 50/50 Orchard+Scrub.
-# - High/Very High: strict like-for-like.
-# - Hedgerow excluded.
-# - Tie-break on equal cost: prefer sites with larger total stock.
-# - Robust result map.
+# Policy summary:
+# - Always minimise total cost. No proximity preference.
+# - ≤ 2 banks overall per quote (global).
+# - Exactly one option per demand line (no splitting) EXCEPT Medium FAR 50/50 Orchard+Scrub (a single option).
+# - Low (incl. Net Gain): legal substitutions allowed but pricing must come from exact price rows (no group-proxy).
+# - Medium: Local/Adjacent => single-habitat only; FAR may use Orchard+Scrub 50/50 pair (if present/cheaper).
+# - High/Very High: like-for-like only (exact names).
+# - Hedgerow: excluded everywhere.
+# - Min line quantity = 0.01 (solver uses exact coverage per line).
+# - Ties: tiny epsilon to prefer banks with more total stock.
+# - NEW: Prefer a single site (BANK_KEY) if its total ≤ 1% above the global cheapest solution.
 
 import json
 import re
@@ -279,51 +279,27 @@ if backend is None:
     st.warning("Upload your backend workbook to continue.", icon="⚠️")
     st.stop()
 
-# ========= BANK_KEY normalisation helpers =========
-def normalise_banks_keys(banks_df: pd.DataFrame) -> pd.DataFrame:
-    """Keep/derive a stable BANK_KEY per site."""
-    df = banks_df.copy()
-    for c in ("bank_id", "bank_name", "BANK_KEY"):
-        if c in df.columns:
-            df[c] = df[c].map(sstr)
-    if "BANK_KEY" not in df.columns or df["BANK_KEY"].map(sstr).eq("").all():
-        if "bank_name" in df.columns and df["bank_name"].ne("").any():
-            df["BANK_KEY"] = df["bank_name"].map(sstr)
-        elif "bank_id" in df.columns:
-            df["BANK_KEY"] = df["bank_id"].map(sstr)
-        else:
-            df["BANK_KEY"] = ""
-    else:
-        df["BANK_KEY"] = df["BANK_KEY"].map(sstr)
-    return df
-
-def attach_bank_key(df: pd.DataFrame, banks_df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure df has BANK_KEY by merging from Banks on bank_id and filling as needed."""
+# ========= BANK_KEY everywhere (immediately after load) =========
+def make_bank_key_col(df: pd.DataFrame, banks_df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    for c in ("bank_id", "bank_name", "BANK_KEY"):
-        if c in out.columns:
-            out[c] = out[c].map(sstr)
-    if "bank_id" in out.columns and "bank_id" in banks_df.columns and "BANK_KEY" in banks_df.columns:
-        out = out.merge(
-            banks_df[["bank_id","BANK_KEY"]].drop_duplicates(),
-            on="bank_id", how="left", suffixes=("", "_from_banks")
-        )
-        if "BANK_KEY_from_banks" in out.columns:
-            out["BANK_KEY"] = np.where(
-                out["BANK_KEY_from_banks"].map(sstr).ne(""),
-                out["BANK_KEY_from_banks"], out.get("BANK_KEY","")
-            )
-            out = out.drop(columns=["BANK_KEY_from_banks"])
-    if "BANK_KEY" not in out.columns:
-        out["BANK_KEY"] = ""
-    mask_blank = out["BANK_KEY"].map(sstr).eq("")
+    has_df_name = "bank_name" in out.columns and out["bank_name"].astype(str).str.strip().ne("").any()
+    if not has_df_name:
+        if "bank_id" in out.columns and "bank_id" in banks_df.columns and "bank_name" in banks_df.columns:
+            m = banks_df[["bank_id","bank_name"]].drop_duplicates()
+            out = out.merge(m, on="bank_id", how="left")
     if "bank_name" in out.columns:
-        out.loc[mask_blank, "BANK_KEY"] = out.loc[mask_blank, "bank_name"].map(sstr)
-        mask_blank = out["BANK_KEY"].map(sstr).eq("")
-    if "bank_id" in out.columns:
-        out.loc[mask_blank, "BANK_KEY"] = out.loc[mask_blank, "bank_id"].map(sstr)
+        out["BANK_KEY"] = out["bank_name"].where(out["bank_name"].astype(str).str.strip().ne(""), out.get("bank_id"))
+    else:
+        out["BANK_KEY"] = out.get("bank_id")
     out["BANK_KEY"] = out["BANK_KEY"].map(sstr)
     return out
+
+def _ensure_bank_keys_all(backend: Dict[str, pd.DataFrame]) -> None:
+    backend["Banks"] = make_bank_key_col(backend["Banks"], backend["Banks"])
+    backend["Stock"] = make_bank_key_col(backend["Stock"], backend["Banks"])
+    backend["Pricing"] = make_bank_key_col(backend["Pricing"], backend["Banks"])
+
+_ensure_bank_keys_all(backend)
 
 # ========= Quotes policy (if WITH_STOCK columns exist) =========
 if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["Stock"].columns:
@@ -336,7 +312,7 @@ if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["
         s["quantity_available"] = (s["available_excl_quotes"] - 0.5 * s["quoted"]).clip(lower=0)
     backend["Stock"] = s
 
-# ========= Enrich Banks geography & keys =========
+# ========= Enrich Banks geography =========
 def bank_row_to_latlon(row: pd.Series) -> Optional[Tuple[float,float,str]]:
     if "lat" in row and "lon" in row:
         try:
@@ -400,7 +376,9 @@ def enrich_banks_geography(banks_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 backend["Banks"] = enrich_banks_geography(backend["Banks"])
-backend["Banks"] = normalise_banks_keys(backend["Banks"])
+backend["Banks"] = make_bank_key_col(backend["Banks"], backend["Banks"])
+backend["Stock"] = make_bank_key_col(backend["Stock"], backend["Banks"])
+backend["Pricing"] = make_bank_key_col(backend["Pricing"], backend["Banks"])
 
 # ========= Validate minimal columns =========
 for sheet, cols in {
@@ -424,17 +402,16 @@ def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     df["tier"] = df["tier"].astype(str).str.strip().str.lower()
     df["contract_size"] = df["contract_size"].astype(str).str.strip().str.lower()
     df["bank_id"] = df["bank_id"].astype(str).str.strip()
+    df = make_bank_key_col(df, backend["Banks"])
     if "broader_type" not in df.columns: df["broader_type"] = ""
     if "distinctiveness_name" not in df.columns: df["distinctiveness_name"] = ""
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
     df = df[~df["habitat_name"].map(is_hedgerow)].copy()
     return df
 
-# Apply hedgerow filter to Stock; normalise pricing; attach BANK_KEY from Banks
+# Apply hedgerow filter to Stock
 backend["Stock"] = backend["Stock"][~backend["Stock"]["habitat_name"].map(is_hedgerow)].copy()
 backend["Pricing"] = normalise_pricing(backend["Pricing"])
-backend["Pricing"] = attach_bank_key(backend["Pricing"], backend["Banks"])
-backend["Stock"]   = attach_bank_key(backend["Stock"],   backend["Banks"])
 
 # ========= Distinctiveness mapping =========
 dist_levels_map = {
@@ -508,27 +485,20 @@ if run_locate:
         st.error(f"Location error: {e}")
 
 def render_base_map():
-    lat0 = st.session_state.get("target_lat", target_lat)
-    lon0 = st.session_state.get("target_lon", target_lon)
-    if lat0 is None or lon0 is None:
+    if target_lat is None or target_lon is None:
         fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
         folium.LayerControl(collapsed=True).add_to(fmap)
-        return fmap, None, None
-    fmap = folium.Map(location=[lat0, lon0], zoom_start=11, control_scale=True)
-    add_geojson_layer(fmap, st.session_state.get("lpa_geojson", lpa_geojson),
-                      f"LPA: {st.session_state.get('target_lpa_name', target_lpa_name) or 'LPA'}",
-                      color="red", weight=2, fill_opacity=0.05)
-    add_geojson_layer(fmap, st.session_state.get("nca_geojson", nca_geojson),
-                      f"NCA: {st.session_state.get('target_nca_name', target_nca_name) or 'NCA'}",
-                      color="yellow", weight=3, fill_opacity=0.05)
-    folium.CircleMarker([lat0, lon0], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
+        return fmap
+    fmap = folium.Map(location=[target_lat, target_lon], zoom_start=11, control_scale=True)
+    add_geojson_layer(fmap, lpa_geojson, f"LPA: {target_lpa_name}" if target_lpa_name else "LPA", color="red", weight=2, fill_opacity=0.05)
+    add_geojson_layer(fmap, nca_geojson, f"NCA: {target_nca_name}" if target_nca_name else "NCA", color="yellow", weight=3, fill_opacity=0.05)
+    folium.CircleMarker([target_lat, target_lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
     folium.LayerControl(collapsed=True).add_to(fmap)
-    return fmap, lat0, lon0
+    return fmap
 
 if (target_lat is not None) and (target_lon is not None):
     st.markdown("### Map")
-    fmap_preview, _, _ = render_base_map()
-    st_folium(fmap_preview, height=420, returned_objects=[], use_container_width=True, key="basemap")
+    st_folium(render_base_map(), height=420, returned_objects=[], use_container_width=True, key="basemap")
 
 # ========= Demand =========
 st.subheader("2) Demand (units required)")
@@ -563,11 +533,10 @@ with st.container(border=True):
             )
         with c3:
             if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
-                to_delete.append(row["id"])   # ← fixed: removed stray ]
-
+                to_delete.append(row["id"])
     if to_delete:
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
-        st.rerun()  # immediate refresh after delete
+        st.rerun()
 
     cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
     with cc1:
@@ -579,7 +548,7 @@ with st.container(border=True):
             st.rerun()
     with cc2:
         if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
-                     help="Adds a 'Net Gain' line (trades like Low distinctiveness)."):
+                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
             st.session_state.demand_rows.append(
                 {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
             )
@@ -590,7 +559,6 @@ with st.container(border=True):
             init_demand_state()
             st.rerun()
 
-
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
 st.metric("Total units", f"{total_units:.2f}")
 
@@ -599,11 +567,11 @@ demand_df = pd.DataFrame(
      for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
 )
 
-# 🚫 Block Hedgerow
+# 🚫 Block Hedgerow if someone adds it by mistake
 if not demand_df.empty:
     banned = [h for h in demand_df["habitat_name"] if is_hedgerow(h)]
     if banned:
-        st.error("Hedgerow units cannot be traded in this optimiser. Remove: " + ", ".join(sorted(set(banned))))
+        st.error("Hedgerow units cannot be traded in this optimiser. Remove these line(s): " + ", ".join(sorted(set(banned))))
         st.stop()
 
 if not demand_df.empty:
@@ -617,7 +585,7 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
         return True
     dh = sstr(demand_row.get("habitat_name"))
     if dh == NET_GAIN_LABEL:
-        return True  # Net Gain behaves like Low legally
+        return True  # Net Gain behaves like Low distinctiveness legally
     sh = sstr(supply_row.get("habitat_name"))
     d_group = sstr(demand_row.get("broader_type"))
     s_group = sstr(supply_row.get("broader_type"))
@@ -626,15 +594,16 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
     d_key = d_dist_name.lower()
     d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
     s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
+
     if d_key == "low" or dh == NET_GAIN_LABEL:
         return True
     if d_key == "medium":
         same_group = (d_group and s_group and d_group == s_group)
         higher_distinctiveness = (s_val > d_val)
         return bool(same_group or higher_distinctiveness)
-    return sh == dh  # High/Very High like-for-like
+    return sh == dh  # High/VHigh like-for-like only
 
-# ========= Options builder (strict pricing) =========
+# ========= Options builder (strict pricing policy) =========
 def select_size_for_demand(demand_df: pd.DataFrame, pricing_df: pd.DataFrame) -> str:
     present = pricing_df["contract_size"].drop_duplicates().tolist()
     total = float(demand_df["units_required"].sum())
@@ -663,15 +632,20 @@ def prepare_options(demand_df: pd.DataFrame,
                 if c in df.columns:
                     df[c] = df[c].map(sstr)
 
-    # Enrich stock with bank geo + catalog
+    Stock = make_bank_key_col(Stock, Banks)
+
+    # Enrich stock with bank geo + catalog; remove Hedgerow
     stock_full = Stock.merge(
         Banks[["bank_id","bank_name","lpa_name","nca_name","BANK_KEY"]],
         on="bank_id", how="left"
     ).merge(Catalog, on="habitat_name", how="left")
+    stock_full["BANK_KEY"] = stock_full["BANK_KEY"].map(sstr).replace("", np.nan).fillna(stock_full["bank_id"].map(sstr))
     stock_full = stock_full[~stock_full["habitat_name"].map(is_hedgerow)].copy()
 
+    # Keep only chosen contract size in pricing
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
 
+    # Attach effective group/distinctiveness
     Catalog_cols = ["habitat_name", "broader_type", "distinctiveness_name"]
     pc_join = pricing_cs.merge(
         Catalog[Catalog_cols], on="habitat_name", how="left", suffixes=("", "_cat")
@@ -683,8 +657,10 @@ def prepare_options(demand_df: pd.DataFrame,
     for c in ["broader_type_eff","distinctiveness_name_eff","tier","bank_id","habitat_name","BANK_KEY","bank_name"]:
         if c in pc_join.columns:
             pc_join[c] = pc_join[c].map(sstr)
+    pc_join = make_bank_key_col(pc_join, Banks)  # ensure BANK_KEY here too
     pricing_enriched = pc_join[~pc_join["habitat_name"].map(is_hedgerow)].copy()
 
+    # Build price lookup (strict)
     def dval(name: Optional[str]) -> float:
         key = sstr(name)
         return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
@@ -694,23 +670,25 @@ def prepare_options(demand_df: pd.DataFrame,
                               tier: str,
                               demand_broader: str,
                               demand_dist: str) -> Optional[Tuple[float, str, str]]:
+        # exact row (BANK_KEY + tier + size + supply_habitat)
         pr_exact = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
                                     (pricing_enriched["tier"] == tier) &
                                     (pricing_enriched["habitat_name"] == supply_habitat)]
         if not pr_exact.empty:
             r = pr_exact.sort_values("price").iloc[0]
             return float(r["price"]), "exact", sstr(r["habitat_name"])
+
         d_key = sstr(demand_dist).lower()
-        if d_key == "low":
-            return None  # strict: no proxy for Low
+        if d_key == "low":  # no proxy for Low/Net Gain
+            return None
+
         if d_key == "medium":
             d_num = dval(demand_dist)
             grp = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
                                    (pricing_enriched["tier"] == tier)]
             grp = grp[(grp["broader_type_eff"].astype(str).str.len() > 0) &
                       (grp["distinctiveness_name_eff"].astype(str).str.len() > 0)]
-            if grp.empty:
-                return None
+            if grp.empty: return None
             grp_same = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
             if not grp_same.empty:
                 grp_same["_dval"] = grp_same["distinctiveness_name_eff"].map(dval)
@@ -724,8 +702,10 @@ def prepare_options(demand_df: pd.DataFrame,
                 r = grp_any_higher.sort_values("price").iloc[0]
                 return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
             return None
-        return None  # High/VHigh exact only
 
+        return None  # High/VHigh like-for-like only (no proxy)
+
+    # Helper to find Orchard / Scrub names from catalog
     def find_catalog_name(substr: str) -> Optional[str]:
         m = Catalog[Catalog["habitat_name"].str.contains(substr, case=False, na=False)]
         return sstr(m["habitat_name"].iloc[0]) if not m.empty else None
@@ -785,7 +765,7 @@ def prepare_options(demand_df: pd.DataFrame,
         candidates = pd.concat(cand_parts, ignore_index=True)
         candidates = candidates[~candidates["habitat_name"].map(is_hedgerow)].copy()
 
-        # Single-habitat options
+        # NORMAL single-habitat options
         for _, srow in candidates.iterrows():
             if not enforce_catalog_rules_official(
                 pd.Series({"habitat_name": dem_hab, "broader_type": d_broader, "distinctiveness_name": d_dist}),
@@ -827,70 +807,56 @@ def prepare_options(demand_df: pd.DataFrame,
                 "price_habitat": price_hab_used,
             })
 
-        # Paired 50/50 Orchard+Scrub for FAR Medium
-        if sstr(d_dist).lower() == "medium":
-            ORCHARD_NAME = ORCHARD_NAME  # keep naming local
-            SCRUB_NAME = SCRUB_NAME
-            if ORCHARD_NAME and SCRUB_NAME:
-                banks_keys = stock_full["BANK_KEY"].dropna().unique().tolist()
-                for bk in banks_keys:
-                    orch_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (stock_full["habitat_name"] == ORCHARD_NAME)]
-                    scrub_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (
-                        (stock_full["habitat_name"] == SCRUB_NAME) |
-                        (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
-                        (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
-                    )]
-                    if orch_rows.empty or scrub_rows.empty:
-                        continue
-                    for _, o in orch_rows.iterrows():
-                        for _, s2 in scrub_rows.iterrows():
-                            tier_b = tier_for_bank(
-                                sstr(s2.get("lpa_name")), sstr(s2.get("nca_name")),
-                                target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
-                            )
-                            if tier_b != "far":
-                                continue
-                            pi_o = find_price_for_supply(bk, ORCHARD_NAME, tier_b, d_broader, d_dist)
-                            pi_s = find_price_for_supply(bk, s2["habitat_name"], tier_b, d_broader, d_dist)
-                            if not pi_o or not pi_s:
-                                continue
-                            cap_o = float(o.get("quantity_available", 0) or 0.0)
-                            cap_s = float(s2.get("quantity_available", 0) or 0.0)
-                            if cap_o <= 0 or cap_s <= 0:
-                                continue
-                            price = 0.5 * float(pi_o[0]) + 0.5 * float(pi_s[0])
-                            options.append({
-                                "type": "paired",
-                                "demand_idx": di,
-                                "demand_habitat": dem_hab,
-                                "BANK_KEY": bk,
-                                "bank_name": sstr(o.get("bank_name")),
-                                "bank_id": sstr(o.get("bank_id")),
-                                "supply_habitat": f"{ORCHARD_NAME} + {sstr(s2['habitat_name'])}",
-                                "tier": tier_b,
-                                "proximity": tier_b,
-                                "unit_price": price,
-                                "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s2["stock_id"]): 0.5},
-                                "price_source": "group-proxy",
-                                "price_habitat": f"{pi_o[2]} + {pi_s[2]}",
-                            })
+        # Paired Orchard+Scrub for MEDIUM — FAR ONLY, 50/50 and same bank
+        if sstr(d_dist).lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
+            banks_keys = stock_full["BANK_KEY"].dropna().unique().tolist()
+            for bk in banks_keys:
+                orch_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (stock_full["habitat_name"] == ORCHARD_NAME)]
+                scrub_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (
+                    (stock_full["habitat_name"] == SCRUB_NAME) |
+                    (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
+                    (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
+                )]
+                if orch_rows.empty or scrub_rows.empty:
+                    continue
+                for _, o in orch_rows.iterrows():
+                    for _, s2 in scrub_rows.iterrows():
+                        tier_b = tier_for_bank(
+                            sstr(s2.get("lpa_name")), sstr(s2.get("nca_name")),
+                            target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+                        )
+                        if tier_b != "far":
+                            continue
+                        pi_o = find_price_for_supply(bk, ORCHARD_NAME, tier_b, d_broader, d_dist)
+                        pi_s = find_price_for_supply(bk, s2["habitat_name"], tier_b, d_broader, d_dist)
+                        if not pi_o or not pi_s:
+                            continue
+                        cap_o = float(o.get("quantity_available", 0) or 0.0)
+                        cap_s = float(s2.get("quantity_available", 0) or 0.0)
+                        if cap_o <= 0 or cap_s <= 0:
+                            continue
+                        price = 0.5 * float(pi_o[0]) + 0.5 * float(pi_s[0])
+                        options.append({
+                            "type": "paired",
+                            "demand_idx": di,
+                            "demand_habitat": dem_hab,
+                            "BANK_KEY": bk,
+                            "bank_name": sstr(o.get("bank_name")),
+                            "bank_id": sstr(o.get("bank_id")),
+                            "supply_habitat": f"{ORCHARD_NAME} + {sstr(s2['habitat_name'])}",
+                            "tier": tier_b,
+                            "proximity": tier_b,
+                            "unit_price": price,
+                            "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s2["stock_id"]): 0.5},
+                            "price_source": "group-proxy",
+                            "price_habitat": f"{pi_o[2]} + {pi_s[2]}",
+                        })
 
     return options, stock_caps, stock_bankkey
 
-# ========= Optimiser =========
-def optimise(demand_df: pd.DataFrame,
-             target_lpa: str, target_nca: str,
-             lpa_neigh: List[str], nca_neigh: List[str],
-             lpa_neigh_norm: List[str], nca_neigh_norm: List[str],
-             single_site_slack: float = 0.01) -> Tuple[pd.DataFrame, float, str]:
-    chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
-    options, stock_caps, stock_bankkey = prepare_options(
-        demand_df, chosen_size, target_lpa, target_nca,
-        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
-    )
-    if not options:
-        raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
-
+# ========= Optimiser (no splitting per demand line; ≤2 banks overall) =========
+def _solve_milp(options, stock_caps, stock_bankkey, demand_df, max_banks: int) -> Tuple[pd.DataFrame, float]:
+    """Solve MILP with given bank-count limit (max_banks ∈ {1,2})."""
     # Index by demand
     idx_by_dem: Dict[int, List[int]] = {}
     dem_need: Dict[int, float] = {}
@@ -899,95 +865,129 @@ def optimise(demand_df: pd.DataFrame,
         dem_need[di] = float(drow["units_required"])
     for i, opt in enumerate(options):
         idx_by_dem[opt["demand_idx"]].append(i)
-
     bad = [di for di, idxs in idx_by_dem.items() if len(idxs) == 0]
     if bad:
         names = [sstr(demand_df.iloc[di]["habitat_name"]) for di in bad]
         raise RuntimeError("No legal options for: " + ", ".join(names))
 
     bank_keys = sorted({opt["BANK_KEY"] for opt in options})
+    import pulp
+    prob = pulp.LpProblem("BNG_MinTotalCost_OneOptionPerDemand", pulp.LpMinimize)
 
-    def solve_with_bank_limit(max_sites: int):
-        import pulp
-        prob = pulp.LpProblem(f"BNG_MinCost_SitesLe{max_sites}", pulp.LpMinimize)
-        x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
-        z = [pulp.LpVariable(f"z_{i}", lowBound=0, upBound=1, cat="Binary") for i in range(len(options))]
-        y = {b: pulp.LpVariable(f"y_{norm_name(b)}", lowBound=0, upBound=1, cat="Binary") for b in bank_keys}
+    x = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
+    z = [pulp.LpVariable(f"z_{i}", lowBound=0, upBound=1, cat="Binary") for i in range(len(options))]
+    y = {b: pulp.LpVariable(f"y_{norm_name(b)}", lowBound=0, upBound=1, cat="Binary") for b in bank_keys}
 
-        # total bank capacity for tie-break
-        bank_capacity_total: Dict[str, float] = {b: 0.0 for b in bank_keys}
-        for sid, cap in stock_caps.items():
-            bkey = stock_bankkey.get(sid, "")
-            if bkey in bank_capacity_total:
-                bank_capacity_total[bkey] += float(cap or 0.0)
+    # Tie-break epsilon prefers banks with more total stock (if total costs equal)
+    bank_capacity_total: Dict[str, float] = {b: 0.0 for b in bank_keys}
+    for sid, cap in stock_caps.items():
+        bkey = stock_bankkey.get(sid, "")
+        if bkey in bank_capacity_total:
+            bank_capacity_total[bkey] += float(cap or 0.0)
+    cost_term = pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))])
+    eps = 1e-9
+    tie_break = -eps * pulp.lpSum([bank_capacity_total[b] * y[b] for b in bank_keys])
+    prob += cost_term + tie_break
 
-        cost_term = pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))])
-        eps = 1e-9
-        tie_break = -eps * pulp.lpSum([bank_capacity_total[b] * y[b] for b in bank_keys])
-        prob += cost_term + tie_break
+    # ≤ max_banks overall
+    prob += pulp.lpSum([y[b] for b in bank_keys]) <= max_banks
 
-        prob += pulp.lpSum([y[b] for b in bank_keys]) <= max_sites
+    # Link chosen options to active banks
+    for i, opt in enumerate(options):
+        prob += z[i] <= y[opt["BANK_KEY"]]
 
-        for i, opt in enumerate(options):
-            prob += z[i] <= y[opt["BANK_KEY"]]
+    # For each demand line: exactly one option chosen; full need through that option
+    for di, idxs in idx_by_dem.items():
+        need = dem_need[di]
+        prob += pulp.lpSum([z[i] for i in idxs]) == 1
+        prob += pulp.lpSum([x[i] for i in idxs]) == need
+        for i in idxs:
+            prob += x[i] <= need * z[i]
 
+    # Stock caps
+    use_map: Dict[str, List[Tuple[int, float]]] = {}
+    for i, opt in enumerate(options):
+        for sid, coef in opt["stock_use"].items():
+            use_map.setdefault(sid, []).append((i, float(coef)))
+    for sid, pairs in use_map.items():
+        cap = float(stock_caps.get(sid, 0.0))
+        prob += pulp.lpSum([coef * x[i] for (i, coef) in pairs]) <= cap
+
+    prob.solve(pulp.PULP_CBC_CMD(msg=False))
+    status = pulp.LpStatus[prob.status]
+    if status not in ("Optimal", "Feasible"):
+        # Try to explain infeasibility per line
+        issues = []
         for di, idxs in idx_by_dem.items():
+            name = sstr(demand_df.iloc[di]["habitat_name"])
+            feasible_by_stock = False
             need = dem_need[di]
-            prob += pulp.lpSum([z[i] for i in idxs]) == 1
-            prob += pulp.lpSum([x[i] for i in idxs]) == need
             for i in idxs:
-                prob += x[i] <= need * z[i]
+                max_take = float('inf')
+                for sid, coef in options[i]["stock_use"].items():
+                    if coef > 0:
+                        max_take = min(max_take, stock_caps.get(sid, 0.0) / coef)
+                if max_take + 1e-9 >= need:
+                    feasible_by_stock = True
+                    break
+            if not feasible_by_stock:
+                issues.append(f"{name}: insufficient stock for any single legal option")
+        msg = "Optimiser infeasible."
+        if issues:
+            msg += " Problems: " + "; ".join(issues)
+        raise RuntimeError(msg)
 
-        use_map: Dict[str, List[Tuple[int, float]]] = {}
-        for i, opt in enumerate(options):
-            for sid, coef in opt["stock_use"].items():
-                use_map.setdefault(sid, []).append((i, float(coef)))
-        for sid, pairs in use_map.items():
-            cap = float(stock_caps.get(sid, 0.0))
-            prob += pulp.lpSum([coef * x[i] for (i, coef) in pairs]) <= cap
+    rows, total_cost = [], 0.0
+    for i in range(len(options)):
+        qty = x[i].value() or 0.0
+        sel = z[i].value() or 0.0
+        if sel >= 0.5 and qty > 0:
+            opt = options[i]
+            rows.append({
+                "demand_habitat": opt["demand_habitat"],
+                "BANK_KEY": opt["BANK_KEY"],
+                "bank_name": opt.get("bank_name",""),
+                "bank_id": opt.get("bank_id",""),
+                "supply_habitat": opt["supply_habitat"],
+                "allocation_type": opt["type"],
+                "tier": opt["tier"],
+                "units_supplied": qty,
+                "unit_price": opt["unit_price"],
+                "cost": qty * opt["unit_price"],
+                "price_source": opt.get("price_source",""),
+                "price_habitat": opt.get("price_habitat",""),
+            })
+            total_cost += qty * opt["unit_price"]
+    return pd.DataFrame(rows), float(total_cost)
 
-        prob.solve(pulp.PULP_CBC_CMD(msg=False))
-        status = pulp.LpStatus[prob.status]
-        if status not in ("Optimal", "Feasible"):
-            return None, None
+def optimise(demand_df: pd.DataFrame,
+             target_lpa: str, target_nca: str,
+             lpa_neigh: List[str], nca_neigh: List[str],
+             lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[pd.DataFrame, float, str]:
+    chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
+    options, stock_caps, stock_bankkey = prepare_options(
+        demand_df, chosen_size, target_lpa, target_nca,
+        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+    )
+    if not options:
+        raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
 
-        rows, total_cost = [], 0.0
-        for i in range(len(options)):
-            qty = x[i].value() or 0.0
-            sel = z[i].value() or 0.0
-            if sel >= 0.5 and qty > 0:
-                opt = options[i]
-                rows.append({
-                    "demand_habitat": opt["demand_habitat"],
-                    "BANK_KEY": opt["BANK_KEY"],
-                    "bank_name": opt.get("bank_name",""),
-                    "bank_id": opt.get("bank_id",""),
-                    "supply_habitat": opt["supply_habitat"],
-                    "allocation_type": opt["type"],
-                    "tier": opt["tier"],
-                    "units_supplied": qty,
-                    "unit_price": opt["unit_price"],
-                    "cost": qty * opt["unit_price"],
-                    "price_source": opt.get("price_source",""),
-                    "price_habitat": opt.get("price_habitat",""),
-                })
-                total_cost += qty * opt["unit_price"]
-        return (pd.DataFrame(rows), float(total_cost))
-
-    # Solve for absolute cheapest with ≤2 sites
     if not _HAS_PULP:
-        raise RuntimeError("MILP solver (PuLP) not available in this environment.")
-    sol2, cost2 = solve_with_bank_limit(max_sites=2)
-    if sol2 is None:
-        raise RuntimeError("Optimiser infeasible with ≤2 sites.")
+        raise RuntimeError("PuLP not available in this environment.")
 
-    # Try single-site solution, prefer if within 1%
-    sol1, cost1 = solve_with_bank_limit(max_sites=1)
-    chosen_df, chosen_cost = sol2, cost2
-    if sol1 is not None and cost1 <= (1.0 + single_site_slack) * cost2 + 1e-6:
-        chosen_df, chosen_cost = sol1, cost1
+    # Stage A: global cheapest with ≤2 banks
+    df2, best_cost = _solve_milp(options, stock_caps, stock_bankkey, demand_df, max_banks=2)
 
-    return chosen_df, chosen_cost, chosen_size
+    # Stage B: prefer single site if within 1% of cheapest
+    try:
+        df1, cost1 = _solve_milp(options, stock_caps, stock_bankkey, demand_df, max_banks=1)
+        if cost1 <= 1.01 * best_cost + 1e-6:
+            # Accept single-site solution
+            return df1, cost1, chosen_size
+    except Exception:
+        pass  # single-site infeasible; keep ≤2-banks solution
+
+    return df2, best_cost, chosen_size
 
 # ========= Run optimiser UI =========
 st.subheader("3) Run optimiser")
@@ -1045,10 +1045,11 @@ with st.expander("🔎 Diagnostics", expanded=False):
                 )
                 st.dataframe(grouped, use_container_width=True, hide_index=True)
                 if "price_source" in cand_df.columns:
-                    st.caption("Note: `price_source='group-proxy'` is Medium-only (group/distinctiveness proxy).")
+                    st.caption("Note: `price_source='group-proxy'` means priced via group/distinctiveness rules (Medium only).")
 
+                # Cheapest candidates per demand (top 5)
                 try:
-                    st.markdown("**Cheapest candidates per demand (top 5)**")
+                    st.markdown("**Cheapest candidates per demand (top 5 by unit price)**")
                     for dem in dd["habitat_name"].unique():
                         sub = cand_df[cand_df["demand_habitat"] == dem].copy()
                         if sub.empty:
@@ -1072,6 +1073,7 @@ def _build_pricing_enriched_for_size(chosen_size: str) -> pd.DataFrame:
     pr = Pricing[Pricing["contract_size"] == chosen_size].copy()
     if "bank_name" not in pr.columns and "bank_id" in pr.columns and "bank_name" in Banks.columns:
         pr = pr.merge(Banks[["bank_id","bank_name"]].drop_duplicates(), on="bank_id", how="left")
+
     pc_join = pr.merge(
         Catalog[["habitat_name", "broader_type", "distinctiveness_name"]],
         on="habitat_name", how="left", suffixes=("", "_cat")
@@ -1080,9 +1082,11 @@ def _build_pricing_enriched_for_size(chosen_size: str) -> pd.DataFrame:
                                            pc_join["broader_type"], pc_join["broader_type_cat"])
     pc_join["distinctiveness_name_eff"] = np.where(pc_join["distinctiveness_name"].astype(str).str.len()>0,
                                                    pc_join["distinctiveness_name"], pc_join["distinctiveness_name_cat"])
+    pc_join = make_bank_key_col(pc_join, Banks)  # ensure BANK_KEY
     for c in ["broader_type_eff","distinctiveness_name_eff","tier","bank_id","habitat_name","BANK_KEY","bank_name"]:
         if c in pc_join.columns:
             pc_join[c] = pc_join[c].astype(str).str.strip()
+
     cols = [
         "BANK_KEY", "bank_name", "bank_id", "contract_size", "tier",
         "habitat_name", "price", "broader_type_eff", "distinctiveness_name_eff"
@@ -1099,18 +1103,15 @@ with st.expander("🧾 Price readout (normalised view the optimiser uses)", expa
         present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
         total_units = float(demand_df["units_required"].sum()) if not demand_df.empty else 0.0
         chosen_size = select_contract_size(total_units, present_sizes)
-
         st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes})")
-
         prn = _build_pricing_enriched_for_size(chosen_size)
-
         if prn.empty:
             st.error("No pricing rows found for the chosen contract size.")
         else:
             st.markdown("**Full normalised price table (this size)**")
             st.dataframe(prn, use_container_width=True, hide_index=True)
 
-            st.markdown("**Summary by site & tier**")
+            st.markdown("**Summary by bank & tier**")
             summ = (prn.groupby(["BANK_KEY","bank_name","tier"], as_index=False)
                         .agg(rows=("price","count"),
                              min_price=("price","min"),
@@ -1224,13 +1225,16 @@ if run:
         nca_neighbors = st.session_state.get("nca_neighbors", nca_neighbors)
         lpa_neighbors_norm = st.session_state.get("lpa_neighbors_norm", lpa_neighbors_norm)
         nca_neighbors_norm = st.session_state.get("nca_neighbors_norm", nca_neighbors_norm)
+        target_lat = st.session_state.get("target_lat", target_lat)
+        target_lon = st.session_state.get("target_lon", target_lon)
+        lpa_geojson = st.session_state.get("lpa_geojson", lpa_geojson)
+        nca_geojson = st.session_state.get("nca_geojson", nca_geojson)
 
         alloc_df, total_cost, size = optimise(
             demand_df,
             target_lpa, target_nca,
             [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
-            lpa_neighbors_norm, nca_neighbors_norm,
-            single_site_slack=0.01  # ← 1% preference for single site
+            lpa_neighbors_norm, nca_neighbors_norm
         )
 
         st.success(f"Optimisation complete. Contract size = **{size}**. Total cost: **£{total_cost:,.0f}**")
@@ -1238,9 +1242,9 @@ if run:
         st.markdown("#### Allocation detail")
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
-            st.caption("Note: `price_source='group-proxy'` rows are Medium-only (via group/distinctiveness).")
+            st.caption("Note: rows with `price_source='group-proxy'` were priced using group/distinctiveness rows (Medium only).")
 
-        st.markdown("#### By site (BANK_KEY)")
+        st.markdown("#### By bank")
         by_bank = alloc_df.groupby(["BANK_KEY","bank_name","bank_id"], as_index=False).agg(
             units_supplied=("units_supplied","sum"),
             cost=("cost","sum")
@@ -1254,10 +1258,11 @@ if run:
         )
         st.dataframe(by_hab, use_container_width=True)
 
-        # ------- Map overlay: chosen sites and links -------
-        fmap, lat0, lon0 = render_base_map()
+        # ------- Map overlay: chosen banks and links -------
+        fmap = render_base_map()
+        lat0, lon0 = target_lat, target_lon
 
-        # Site coordinates via Banks (geocode if needed)
+        # Bank coordinates via Banks (geocode if needed)
         bank_coords: Dict[str, Tuple[float,float]] = {}
         banks_df = backend["Banks"].copy()
         for _, b in banks_df.iterrows():
@@ -1266,6 +1271,7 @@ if run:
             if loc:
                 bank_coords[bkey] = (loc[0], loc[1])
 
+        # Summaries per BANK_KEY for popup
         if 'alloc_df' in locals() and not alloc_df.empty:
             grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
             for (bkey, bname), g in grouped:
@@ -1275,7 +1281,7 @@ if run:
                         continue
                     lat_b, lon_b = latlon
 
-                    # Draw site catchments
+                    # --- Draw the bank's catchment perimeters (LPA & NCA) ---
                     bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
                     cache_key = sstr(bkey)
                     if cache_key not in bank_catch_cache:
@@ -1291,20 +1297,20 @@ if run:
                     bgeo = bank_catch_cache[cache_key]
                     add_geojson_layer(
                         fmap, bgeo.get("lpa_gj"),
-                        name=f"{sstr(bname) or sstr(bkey)} — Site LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
                         color="green", weight=2, fill_opacity=0.03
                     )
                     add_geojson_layer(
                         fmap, bgeo.get("nca_gj"),
-                        name=f"{sstr(bname) or sstr(bkey)} — Site NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
                         color="blue", weight=3, fill_opacity=0.03
                     )
 
-                    # Marker
+                    # Marker and route
                     popup_lines = []
                     total_units_b = g["units_supplied"].sum()
                     total_cost_b = g["cost"].sum()
-                    popup_lines.append(f"<b>Site:</b> {sstr(bname) or sstr(bkey)}")
+                    popup_lines.append(f"<b>Bank:</b> {sstr(bname) or sstr(bkey)}")
                     popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
                     popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
                     popup_lines.append("<b>Breakdown:</b>")
@@ -1325,7 +1331,7 @@ if run:
                             tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
                         ).add_to(fmap)
                 except Exception as map_e:
-                    st.caption(f"Skipped map overlay for site {sstr(bname) or sstr(bkey)}: {map_e}")
+                    st.caption(f"Skipped map overlay for bank {sstr(bname) or sstr(bkey)}: {map_e}")
 
         st.markdown("### Map (with selected supply)")
         st_folium(fmap, height=520, returned_objects=[], use_container_width=True, key="resultmap")
@@ -1339,8 +1345,8 @@ if run:
 
         st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
                            file_name="allocation.csv", mime="text/csv")
-        st.download_button("Download by site (CSV)", data=df_to_csv_bytes(by_bank),
-                           file_name="allocation_by_site.csv", mime="text/csv")
+        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
+                           file_name="allocation_by_bank.csv", mime="text/csv")
         st.download_button("Download by habitat (CSV)", data=df_to_csv_bytes(by_hab),
                            file_name="allocation_by_habitat.csv", mime="text/csv")
 
