@@ -2172,9 +2172,7 @@ if (st.session_state.get("optimization_complete", False) and
     col1, col2, col3 = st.columns([1, 1, 1])
     
     with col1:
-        if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-            st.code(email_html, language="html")
-            st.success("Email HTML generated! Copy the code above and paste into your email client.")
+
     
     with col2:
         # Create .eml file content
