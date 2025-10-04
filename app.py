@@ -794,9 +794,9 @@ def prepare_options(demand_df: pd.DataFrame,
                 scrub_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (
                     (stock_full["habitat_name"] == SCRUB_NAME) |
                     (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
-                    (stock_full["habitat_name"].str_contains("bramble", case=False, na=False, regex=False, na=False)
-                     if hasattr(pd.Series.str, "contains") else stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
+                    (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
                 )]
+
                 if orch_rows.empty or scrub_rows.empty:
                     continue
                 for _, o in orch_rows.iterrows():
