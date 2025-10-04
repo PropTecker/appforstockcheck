@@ -2062,9 +2062,9 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
 # ================= Fixed Email Report Generation Function =================
 def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
                                        client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
-    """Generate the client-facing report table and email body matching exact template"""
+    """Generate the client-facing report table and email body matching exact template - NO INPUTS"""
     
-    # Create the client report table
+    # Separate by habitat types
     area_habitats = []
     hedgerow_habitats = []
     watercourse_habitats = []
