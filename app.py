@@ -1666,7 +1666,7 @@ with map_container:
 
     except Exception as outer_error:
         st.error(f"Complete map failure: {outer_error}")
-        st.info("Map temporarily unavailable")lium installation.")
+        st.info("Map temporarily unavailable")
             
             # Show installation instructions
             st.code("pip install streamlit-folium", language="bash")
