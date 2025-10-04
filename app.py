@@ -2087,33 +2087,30 @@ if (st.session_state.get("optimization_complete", False) and
         col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
         
         with col_input1:
-            # Direct assignment - no on_change callback
-            new_client_name = st.text_input(
+            client_name = st.text_input(
                 "Client Name", 
                 value=st.session_state.email_client_name, 
-                key="email_client_name_direct"
+                key="email_client_name_input"
             )
-            # Update session state only if changed
-            if new_client_name != st.session_state.email_client_name:
-                st.session_state.email_client_name = new_client_name
-                
+                    
         with col_input2:
-            new_ref_number = st.text_input(
+            ref_number = st.text_input(
                 "Reference Number", 
                 value=st.session_state.email_ref_number, 
-                key="email_ref_number_direct"
+                key="email_ref_number_input"
             )
-            if new_ref_number != st.session_state.email_ref_number:
-                st.session_state.email_ref_number = new_ref_number
-                
+                    
         with col_input3:
-            new_location = st.text_input(
+            location = st.text_input(
                 "Development Location", 
                 value=st.session_state.email_location, 
-                key="email_location_direct"
+                key="email_location_input"
             )
-            if new_location != st.session_state.email_location:
-                st.session_state.email_location = new_location
+
+# Update session state with current values (no conditional logic)
+st.session_state.email_client_name = client_name
+st.session_state.email_ref_number = ref_number  
+st.session_state.email_location = location
         
         # Use the current values (either from session state or just entered)
         client_name = st.session_state.email_client_name
