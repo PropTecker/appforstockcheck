@@ -2050,10 +2050,8 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
-        
-        # Email generation
-        # Enhanced email generation with .eml file creation:
-# Enhanced email generation with .eml file creation:
+
+# Email generation section
 st.markdown("**📧 Email Generation:**")
 
 col1, col2, col3 = st.columns([1, 1, 1])
@@ -2065,7 +2063,6 @@ with col1:
 
 with col2:
     # Create .eml file content
-    import base64
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     
