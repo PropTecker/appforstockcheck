@@ -2084,38 +2084,45 @@ if (st.session_state.get("optimization_complete", False) and
         
         # ========== FIXED INPUTS - NO CALLBACKS ==========
         st.markdown("**📝 Email Details:**")
-        col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
-        
-        with col_input1:
-            client_name = st.text_input(
-                "Client Name", 
-                value=st.session_state.email_client_name, 
-                key="email_client_name_input"
-            )
-                    
-        with col_input2:
-            ref_number = st.text_input(
-                "Reference Number", 
-                value=st.session_state.email_ref_number, 
-                key="email_ref_number_input"
-            )
-                    
-        with col_input3:
-            location = st.text_input(
-                "Development Location", 
-                value=st.session_state.email_location, 
-                key="email_location_input"
-            )
 
-        # Update session state with current values (no conditional logic)
-        st.session_state.email_client_name = client_name
-        st.session_state.email_ref_number = ref_number  
-        st.session_state.email_location = location
+        with st.form("client_email_form", clear_on_submit=False):
+            col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
+            
+            with col_input1:
+                form_client_name = st.text_input(
+                    "Client Name", 
+                    value=st.session_state.email_client_name,
+                    key="form_client_name"
+                )
+            
+            with col_input2:
+                form_ref_number = st.text_input(
+                    "Reference Number", 
+                    value=st.session_state.email_ref_number,
+                    key="form_ref_number"
+                )
+            
+            with col_input3:
+                form_location = st.text_input(
+                    "Development Location", 
+                    value=st.session_state.email_location,
+                    key="form_location"
+                )
+            
+            # Form submit button
+            form_submitted = st.form_submit_button("Update Email Details")
+            
+            # Only update session state when form is submitted
+            if form_submitted:
+                st.session_state.email_client_name = form_client_name
+                st.session_state.email_ref_number = form_ref_number
+                st.session_state.email_location = form_location
+                st.success("Email details updated!")
         
-        # Use the current values (either from session state or just entered)
+        # Use the session state values for generating the report
         client_name = st.session_state.email_client_name
         ref_number = st.session_state.email_ref_number
-        location = st.session_state.email_location
+        location = st.session_state.email_location    
         
         # Generate the report using session data and input values
         client_table, email_html = generate_client_report_table_fixed(
