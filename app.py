@@ -512,9 +512,9 @@ def find_site(postcode: str, address: str):
     st.session_state["target_lon"] = lon
     st.session_state["lpa_geojson"] = lpa_gj
     st.session_state["nca_geojson"] = nca_gj
-    st.session_state["last_alloc_df"] = None  # Clear previous results
-    st.session_state["optimization_complete"] = False
-    
+    st.session_state["last_alloc_df"] = alloc_df.copy()
+    st.session_state["optimization_complete"] = True
+        
     return t_lpa, t_nca
 
 if run_locate:
@@ -1586,12 +1586,11 @@ def build_results_map(alloc_df: pd.DataFrame):
 
 # Replace the entire "Map Display (Always Visible)" section with this:
 
-# Replace the entire "Map Display (Always Visible)" section with this:
-
 # ================= Map Display (Always Visible) =================
 with map_container:
     st.markdown("### Map")
     
+    # Force map to always render by using a stable key and proper error handling
     try:
         # Determine what map to show
         has_location = st.session_state.get("target_lat") is not None and st.session_state.get("target_lon") is not None
@@ -1599,62 +1598,75 @@ with map_container:
                       not st.session_state.get("last_alloc_df").empty and 
                       st.session_state.get("optimization_complete", False))
         
+        # Build the appropriate map
         if has_results:
             st.caption("📍 Showing optimization results with bank locations and supply routes")
-            fmap_to_show = build_results_map(st.session_state["last_alloc_df"])
+            try:
+                current_map = build_results_map(st.session_state["last_alloc_df"])
+                map_type = "results"
+            except Exception as e:
+                st.warning(f"Failed to build results map: {e}, falling back to base map")
+                current_map = build_base_map()
+                map_type = "base_fallback"
         elif has_location:
             st.caption("📍 Showing target location with LPA/NCA boundaries")
-            fmap_to_show = build_base_map()
+            current_map = build_base_map()
+            map_type = "base"
         else:
             st.caption("📍 Showing UK overview - use 'Locate' to center on your target site")
-            fmap_to_show = build_base_map()
+            current_map = build_base_map()
+            map_type = "overview"
         
-        # Try st_folium first (without returned_data parameter)
+        # Use a simple, stable key that doesn't change too often
+        stable_key = f"bng_map_{map_type}"
+        
+        # Always render the map with error handling
+        map_rendered = False
+        
+        # Try st_folium first
         try:
-            map_data = st_folium(
-                fmap_to_show, 
+            st_folium(
+                current_map, 
                 height=520, 
                 use_container_width=True,
-                key=f"main_map_{st.session_state.get('map_version', 0)}"
+                key=stable_key,
+                width=None
             )
+            map_rendered = True
         except Exception as st_folium_error:
             st.warning(f"st_folium failed: {st_folium_error}")
-            # Try folium_static as fallback
-            if folium_static:
-                st.write("**Using static map renderer**")
-                folium_static(fmap_to_show, width=None, height=520)
-            else:
-                raise st_folium_error
-        
-        # Debug info
-        if st.checkbox("Show map debug info", value=False):
-            st.write("Map state:")
-            st.write(f"- Has location: {has_location}")
-            st.write(f"- Has results: {has_results}")
-            st.write(f"- Target coords: {st.session_state.get('target_lat')}, {st.session_state.get('target_lon')}")
-            st.write(f"- Map version: {st.session_state.get('map_version')}")
-            if has_results:
-                st.write(f"- Results shape: {st.session_state['last_alloc_df'].shape}")
-
-    except Exception as e:
-        st.error(f"Map rendering error: {e}")
-        
-        # Simple fallback map
-        try:
-            st.write("**Creating simple fallback map**")
-            simple_map = folium.Map(location=[54.5, -2.5], zoom_start=6)
-            folium.CircleMarker([54.5, -2.5], radius=5, popup="UK Center", color="red").add_to(simple_map)
             
+            # Try folium_static as backup
             if folium_static:
-                st.write("**Fallback Map (Static Renderer)**")
-                folium_static(simple_map, width=700, height=400)
-            else:
-                st.write("**Fallback Map (st_folium)**")
-                st_folium(simple_map, height=400, key="fallback_map")
+                try:
+                    st.write("**Using static map renderer**")
+                    folium_static(current_map, width=None, height=520)
+                    map_rendered = True
+                except Exception as static_error:
+                    st.error(f"folium_static also failed: {static_error}")
+        
+        # If neither worked, show a very basic map
+        if not map_rendered:
+            st.error("Map rendering failed, showing basic fallback")
+            try:
+                basic_map = folium.Map(
+                    location=[51.5, -0.1] if not has_location else [st.session_state["target_lat"], st.session_state["target_lon"]], 
+                    zoom_start=8
+                )
+                if has_location:
+                    folium.Marker(
+                        [st.session_state["target_lat"], st.session_state["target_lon"]], 
+                        popup="Target Site"
+                    ).add_to(basic_map)
                 
-        except Exception as e2:
-            st.error(f"Even fallback map failed: {e2}")
-            st.info("Map functionality temporarily unavailable. Please check your streamlit-folium installation.")
+                st_folium(basic_map, height=400, key="emergency_map")
+            except Exception as emergency_error:
+                st.error(f"Even emergency map failed: {emergency_error}")
+                st.info("Please refresh the page to restore map functionality.")
+
+    except Exception as outer_error:
+        st.error(f"Complete map failure: {outer_error}")
+        st.info("Map temporarily unavailable")lium installation.")
             
             # Show installation instructions
             st.code("pip install streamlit-folium", language="bash")
