@@ -1,9 +1,9 @@
-# app.py — BNG Optimiser (Standalone), v9.10
-# Changes in v9.10:
-# - Map flicker fix: only one map is rendered, once, at the end of the script.
-#   Single LayerControl; basemap vs results map chosen based on session state.
-# - Orchard+Scrub split: split costs use each part's original unit price (no 50/50 cost split).
-# - Kept all previous features (proxies, diagnostics, downloads, etc.).
+# app.py — BNG Optimiser (Standalone), v9.11
+# Changes in v9.11:
+# - Persistent LPA/NCA banner: stays visible after "Locate" and on reruns.
+# - Always-on map: render inside a fixed placeholder every rerun (no flicker/disappear).
+# - Orchard+Scrub split: each half uses its own original unit price (no 50/50 cost fudge).
+# - Keeps all features from earlier versions.
 
 import json
 import re
@@ -22,13 +22,12 @@ try:
 except Exception:
     folium_static = None
 import folium
-import hashlib
 
 # ================= Config / constants =================
 ADMIN_FEE_GBP = 500.0
 SINGLE_BANK_SOFT_PCT = 0.01  # +1% soft preference for single site
 MAP_CATCHMENT_ALPHA = 0.03
-UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}  # put a real contact email here
+UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}  # set a real contact email
 
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
@@ -131,7 +130,6 @@ def esri_polygon_to_geojson(geom: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     if len(rings) == 1:
         return {"type": "Polygon", "coordinates": [rings[0]]}
-    # NOTE: holes not handled (will render filled)
     return {"type": "MultiPolygon", "coordinates": [[ring] for ring in rings]}
 
 def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weight: int, fill_opacity: float = 0.05, show=True):
@@ -308,7 +306,7 @@ if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["
     if quotes_hold_policy == "Ignore quotes (default)":
         s["quantity_available"] = s["available_excl_quotes"]
     elif quotes_hold_policy == "Quotes hold 100%":
-        s["quantity_available"] = (s["available_excl_quotes"] - s["quoted"]).clip(lower=0)
+        s["quantity_available"] = (s["available_excl_quotes"] - s["quoted']).clip(lower=0)
     else:
         s["quantity_available"] = (s["available_excl_quotes"] - 0.5 * s["quoted"]).clip(lower=0)
     backend["Stock"] = s
@@ -470,18 +468,27 @@ def find_site(postcode: str, address: str):
     st.session_state["target_lon"] = lon
     st.session_state["lpa_geojson"] = lpa_gj
     st.session_state["nca_geojson"] = nca_gj
-    # clear any previous results map (we are just locating now)
-    st.session_state.pop("result_map", None)
-    st.session_state.pop("result_map_key", None)
+    # clear any previous results
     st.session_state.pop("last_alloc_df", None)
     return t_lpa, t_nca
 
 if run_locate:
     try:
         tl, tn = find_site(postcode, address)
+        # one-off success (optional — persistent banner below keeps it visible)
         st.success(f"Found LPA: **{tl}** | NCA: **{tn}**")
     except Exception as e:
         st.error(f"Location error: {e}")
+
+# --- Persistent Locate banner (stays after reruns) ---
+if sstr(st.session_state.get("target_lpa_name")) or sstr(st.session_state.get("target_nca_name")):
+    st.success(
+        f"LPA: **{sstr(st.session_state.get('target_lpa_name') or '—')}** | "
+        f"NCA: **{sstr(st.session_state.get('target_nca_name') or '—')}**"
+    )
+
+# Create a fixed placeholder for the map so it never disappears
+map_placeholder = st.container()
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
@@ -822,8 +829,7 @@ def prepare_options(demand_df: pd.DataFrame,
                         if cap_o <= 0 or cap_s <= 0:
                             continue
                         price_o = float(pi_o[0]); price_s = float(pi_s[0])
-                        # overall unit price is the average (since units are 50/50), but we keep per-part prices to split cost properly later
-                        avg_price = 0.5 * price_o + 0.5 * price_s
+                        avg_price = 0.5 * price_o + 0.5 * price_s  # for optimisation only
                         options.append({
                             "type": "paired",
                             "demand_idx": di,
@@ -834,11 +840,10 @@ def prepare_options(demand_df: pd.DataFrame,
                             "supply_habitat": f"{ORCHARD_NAME} + {sstr(s2['habitat_name'])}",
                             "tier": tier_b,
                             "proximity": tier_b,
-                            "unit_price": avg_price,  # for optimisation only
+                            "unit_price": avg_price,
                             "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s2["stock_id"]): 0.5},
                             "price_source": "group-proxy",
                             "price_habitat": f"{pi_o[2]} + {pi_s[2]}",
-                            # NEW: keep the two component prices for accurate splitting
                             "paired_parts": [
                                 {"habitat": ORCHARD_NAME, "unit_price": price_o},
                                 {"habitat": sstr(s2["habitat_name"]), "unit_price": price_s},
@@ -958,7 +963,6 @@ def optimise(demand_df: pd.DataFrame,
                         "price_source": opt.get("price_source",""),
                         "price_habitat": opt.get("price_habitat",""),
                     }
-                    # carry paired parts for accurate split later
                     if opt.get("type") == "paired" and "paired_parts" in opt:
                         row["paired_parts"] = json.dumps(opt["paired_parts"])
                     rows.append(row)
@@ -994,7 +998,7 @@ def optimise(demand_df: pd.DataFrame,
         return allocA, costA, chosen_size
 
     except Exception:
-        # Greedy fallback (unchanged logic)
+        # Greedy fallback
         caps = stock_caps.copy()
         used_banks: List[str] = []
 
@@ -1075,7 +1079,7 @@ with right:
     else:
         st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’).")
 
-# ================= Diagnostics (unchanged) =================
+# ================= Diagnostics =================
 with st.expander("🔎 Diagnostics", expanded=False):
     try:
         if demand_df.empty:
@@ -1130,7 +1134,7 @@ with st.expander("🔎 Diagnostics", expanded=False):
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
 
-# ================= Price readout (unchanged) =================
+# ================= Price readout =================
 def _build_pricing_enriched_for_size(chosen_size: str) -> pd.DataFrame:
     Pricing = backend["Pricing"].copy()
     Catalog = backend["HabitatCatalog"].copy()
@@ -1225,7 +1229,7 @@ with st.expander("🧾 Price readout (normalised view the optimiser uses)", expa
     except Exception as e:
         st.error(f"Price readout error: {e}")
 
-# ================= Pricing completeness (unchanged) =================
+# ================= Pricing completeness =================
 with st.expander("💷 Pricing completeness (this contract size)", expanded=False):
     try:
         if demand_df.empty:
@@ -1341,14 +1345,12 @@ if run:
                     parts = []
 
                 sh = sstr(r.get("supply_habitat"))
-                # Fallback names from "A + B" if paired_parts missing
                 name_parts = [p.strip() for p in sh.split("+")] if sh else []
 
                 units_total = float(r.get("units_supplied", 0.0) or 0.0)
                 units_each = 0.5 * units_total
 
                 if len(parts) == 2:
-                    # Use original unit prices per part
                     for idx, part in enumerate(parts):
                         rr = r.to_dict()
                         rr["supply_habitat"] = sstr(part.get("habitat") or (name_parts[idx] if idx < len(name_parts) else f"Part {idx+1}"))
@@ -1357,7 +1359,7 @@ if run:
                         rr["cost"] = units_each * rr["unit_price"]
                         rows.append(rr)
                 else:
-                    # Fallback: split cost/units evenly (kept for resilience)
+                    # Fallback: split cost/units evenly
                     if len(name_parts) == 2:
                         for part_name in name_parts:
                             rr = r.to_dict()
@@ -1366,7 +1368,7 @@ if run:
                             rr["cost"] = float(r.get("cost", 0.0) or 0.0) * 0.5
                             rows.append(rr)
                     else:
-                        rows.append(r.to_dict())  # give up: keep as-is
+                        rows.append(r.to_dict())
             return pd.DataFrame(rows)
 
         expanded_alloc = split_paired_rows(alloc_df.copy())
@@ -1381,7 +1383,6 @@ if run:
                                 cost=("cost","sum"))
                            .sort_values(["bank_name","supply_habitat","tier"]))
 
-        # Weighted averages
         site_hab_totals["avg_unit_price"] = site_hab_totals["cost"] / site_hab_totals["units_supplied"].replace(0, np.nan)
         site_hab_totals["avg_effective_unit_price"] = site_hab_totals["cost"] / site_hab_totals["effective_units"].replace(0, np.nan)
 
@@ -1420,7 +1421,7 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
 
-        # Save to session for single map render later
+        # Save to session for results map
         st.session_state["last_alloc_df"] = alloc_df.copy()
 
         # downloads
@@ -1436,143 +1437,131 @@ if run:
     except Exception as e:
         st.error(f"Optimiser error: {e}")
 
-# ================= Single, final map render (fixes flicker) =================
-def build_base_map():
-    lat = st.session_state.get("target_lat", None)
-    lon = st.session_state.get("target_lon", None)
-    lpa_gj = st.session_state.get("lpa_geojson", None)
-    nca_gj = st.session_state.get("nca_geojson", None)
-    t_lpa = sstr(st.session_state.get("target_lpa_name",""))
-    t_nca = sstr(st.session_state.get("target_nca_name",""))
+# ================= Always-on map render (fixed placeholder) =================
+with map_placeholder:
+    st.markdown("### Map")
 
-    if lat is None or lon is None:
-        fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
-    else:
-        fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
-        add_geojson_layer(fmap, lpa_gj, f"LPA: {t_lpa}" if t_lpa else "LPA", color="red", weight=2, fill_opacity=0.05)
-        add_geojson_layer(fmap, nca_gj, f"NCA: {t_nca}" if t_nca else "NCA", color="yellow", weight=3, fill_opacity=0.05)
-        try:
-            folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
-        except Exception:
-            pass
-    folium.LayerControl(collapsed=True).add_to(fmap)
-    return fmap
+    def build_base_map():
+        lat = st.session_state.get("target_lat", None)
+        lon = st.session_state.get("target_lon", None)
+        lpa_gj = st.session_state.get("lpa_geojson", None)
+        nca_gj = st.session_state.get("nca_geojson", None)
+        t_lpa = sstr(st.session_state.get("target_lpa_name",""))
+        t_nca = sstr(st.session_state.get("target_nca_name",""))
 
-def build_results_map(alloc_df: pd.DataFrame):
-    fmap = build_base_map()
-    lat0 = st.session_state.get("target_lat", None)
-    lon0 = st.session_state.get("target_lon", None)
-
-    # Bank coordinates via Banks (geocode if needed)
-    bank_coords: Dict[str, Tuple[float,float]] = {}
-    banks_df = backend["Banks"].copy()
-    for _, b in banks_df.iterrows():
-        bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
-        loc = bank_row_to_latlon(b)
-        if loc:
-            bank_coords[bkey] = (loc[0], loc[1])
-
-    if not alloc_df.empty:
-        grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
-        for (bkey, bname), g in grouped:
+        if lat is None or lon is None:
+            fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
+        else:
+            fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
+            add_geojson_layer(fmap, lpa_gj, f"LPA: {t_lpa}" if t_lpa else "LPA", color="red", weight=2, fill_opacity=0.05)
+            add_geojson_layer(fmap, nca_gj, f"NCA: {t_nca}" if t_nca else "NCA", color="yellow", weight=3, fill_opacity=0.05)
             try:
-                latlon = bank_coords.get(sstr(bkey))
-                if not latlon:
-                    continue
-                lat_b, lon_b = latlon
+                folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
+            except Exception:
+                pass
+        folium.LayerControl(collapsed=True).add_to(fmap)
+        return fmap
 
-                # Catchments (cached)
-                bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
-                cache_key = sstr(bkey)
-                if cache_key not in bank_catch_cache:
-                    try:
-                        b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                        bank_catch_cache[cache_key] = {
-                            "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                            "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                        }
-                    except Exception:
-                        bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+    def build_results_map(alloc_df: pd.DataFrame):
+        fmap = build_base_map()
+        lat0 = st.session_state.get("target_lat", None)
+        lon0 = st.session_state.get("target_lon", None)
 
-                bgeo = bank_catch_cache[cache_key]
-                add_geojson_layer(
-                    fmap, bgeo.get("lpa_gj"),
-                    name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
-                    color="green", weight=2, fill_opacity=MAP_CATCHMENT_ALPHA
-                )
-                add_geojson_layer(
-                    fmap, bgeo.get("nca_gj"),
-                    name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
-                    color="blue", weight=3, fill_opacity=MAP_CATCHMENT_ALPHA
-                )
+        # Bank coordinates via Banks (geocode if needed)
+        bank_coords: Dict[str, Tuple[float,float]] = {}
+        banks_df = backend["Banks"].copy()
+        for _, b in banks_df.iterrows():
+            bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
+            loc = bank_row_to_latlon(b)
+            if loc:
+                bank_coords[bkey] = (loc[0], loc[1])
 
-                # Marker & popup
-                popup_lines = []
-                total_units_b = g["units_supplied"].sum()
-                total_cost_b = g["cost"].sum()
-                popup_lines.append(f"<b>Site (BANK_KEY):</b> {sstr(bname) or sstr(bkey)}")
-                popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
-                popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
-                popup_lines.append("<b>Breakdown:</b>")
-                for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
-                    popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
-
+        if not alloc_df.empty:
+            grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
+            for (bkey, bname), g in grouped:
                 try:
-                    folium.Marker(
-                        [lat_b, lon_b],
-                        icon=folium.Icon(color="green", icon="leaf"),
-                        popup=folium.Popup("<br>".join(popup_lines), max_width=420)
-                    ).add_to(fmap)
-                except Exception:
-                    pass
+                    latlon = bank_coords.get(sstr(bkey))
+                    if not latlon:
+                        continue
+                    lat_b, lon_b = latlon
 
-                # Route line only if target coords exist
-                if (lat0 is not None) and (lon0 is not None):
+                    # Catchments (cached)
+                    bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
+                    cache_key = sstr(bkey)
+                    if cache_key not in bank_catch_cache:
+                        try:
+                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                            bank_catch_cache[cache_key] = {
+                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                            }
+                        except Exception:
+                            bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+
+                    bgeo = bank_catch_cache[cache_key]
+                    add_geojson_layer(
+                        fmap, bgeo.get("lpa_gj"),
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                        color="green", weight=2, fill_opacity=MAP_CATCHMENT_ALPHA
+                    )
+                    add_geojson_layer(
+                        fmap, bgeo.get("nca_gj"),
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                        color="blue", weight=3, fill_opacity=MAP_CATCHMENT_ALPHA
+                    )
+
+                    # Marker & popup
                     try:
-                        folium.PolyLine(
-                            locations=[[lat0, lon0], [lat_b, lon_b]],
-                            weight=2, opacity=0.8, dash_array="6,6", color="blue",
-                            tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
+                        folium.Marker(
+                            [lat_b, lon_b],
+                            icon=folium.Icon(color="green", icon="leaf"),
+                            popup=folium.Popup("<br>".join([
+                                f"<b>Site (BANK_KEY):</b> {sstr(bname) or sstr(bkey)}",
+                                f"<b>Total units:</b> {g['units_supplied'].sum():.3f}",
+                                f"<b>Total cost:</b> £{g['cost'].sum():,.0f}",
+                                "<b>Breakdown:</b>",
+                                *[
+                                    f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})"
+                                    for _, r in g.sort_values('units_supplied', ascending=False).head(6).iterrows()
+                                ]
+                            ]), max_width=420)
                         ).add_to(fmap)
                     except Exception:
                         pass
-            except Exception as map_e:
-                st.caption(f"Skipped map overlay for BANK_KEY {sstr(bname) or sstr(bkey)}: {map_e}")
 
-    # LayerControl already added via base map
-    return fmap
+                    # Route line only if target coords exist
+                    if (lat0 is not None) and (lon0 is not None):
+                        try:
+                            folium.PolyLine(
+                                locations=[[lat0, lon0], [lat_b, lon_b]],
+                                weight=2, opacity=0.8, dash_array="6,6", color="blue",
+                                tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
+                            ).add_to(fmap)
+                        except Exception:
+                            pass
+                except Exception as map_e:
+                    st.caption(f"Skipped map overlay for BANK_KEY {sstr(bname) or sstr(bkey)}: {map_e}")
 
-# Decide which map to render (exactly once)
-st.markdown("### Map")
-try:
+        return fmap
+
+    # Decide which map to show every run (so it never "disappears")
     alloc_present = st.session_state.get("last_alloc_df", None)
-    if isinstance(alloc_present, pd.DataFrame) and not alloc_present.empty:
-        fmap = build_results_map(alloc_present)
-        # persist against input hash (prevents re-renders from blinking)
-        def _hash_inputs_for_map():
-            key = {
-                "alloc": alloc_present.to_dict(orient="list"),
-                "tgt": [st.session_state.get("target_lat"), st.session_state.get("target_lon"),
-                        st.session_state.get("target_lpa_name"), st.session_state.get("target_nca_name")],
-            }
-            return hashlib.md5(json.dumps(key, sort_keys=True, default=str).encode()).hexdigest()
-        hkey = _hash_inputs_for_map()
-        if st.session_state.get("result_map_key") != hkey:
-            st.session_state["result_map"] = fmap
-            st.session_state["result_map_key"] = hkey
-        fmap_to_show = st.session_state["result_map"]
-    else:
-        fmap_to_show = build_base_map()
-
     try:
-        st_folium(fmap_to_show, height=520, use_container_width=True, key="the_map")
-    except Exception:
-        if folium_static:
-            folium_static(fmap_to_show, width=None, height=520)
+        if isinstance(alloc_present, pd.DataFrame) and not alloc_present.empty:
+            fmap_to_show = build_results_map(alloc_present)
         else:
-            st.info("Map unavailable in this environment.")
-except Exception as e:
-    st.warning(f"Map rendering skipped due to an error: {e}")
+            fmap_to_show = build_base_map()
+
+        try:
+            st_folium(fmap_to_show, height=520, use_container_width=True, key="main_map")
+        except Exception:
+            if folium_static:
+                folium_static(fmap_to_show, width=None, height=520)
+            else:
+                st.info("Map unavailable in this environment.")
+    except Exception as e:
+        st.warning(f"Map rendering skipped due to an error: {e}")
+
 
 
 
