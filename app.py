@@ -2080,43 +2080,43 @@ if (st.session_state.get("optimization_complete", False) and
     if "email_location" not in st.session_state:
         st.session_state.email_location = "INSERT LOCATION"
     
-with st.expander("Generate Client Email Report", expanded=False):
-    st.markdown("**Generate a client-facing report table and email:**")
-    
-    # ========== SIMPLIFIED INPUTS ==========
-    st.markdown("**📝 Email Details:**")
-    col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
-    
-    with col_input1:
-        st.session_state.email_client_name = st.text_input(
-            "Client Name", 
-            value=st.session_state.email_client_name, 
-            key="email_client_name_input"
+    with st.expander("Generate Client Email Report", expanded=False):
+        st.markdown("**Generate a client-facing report table and email:**")
+        
+        # ========== SIMPLIFIED INPUTS ==========
+        st.markdown("**📝 Email Details:**")
+        col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
+        
+        with col_input1:
+            st.session_state.email_client_name = st.text_input(
+                "Client Name", 
+                value=st.session_state.email_client_name, 
+                key="email_client_name_input"
+            )
+        with col_input2:
+            st.session_state.email_ref_number = st.text_input(
+                "Reference Number", 
+                value=st.session_state.email_ref_number, 
+                key="email_ref_number_input"
+            )
+        with col_input3:
+            st.session_state.email_location = st.text_input(
+                "Development Location", 
+                value=st.session_state.email_location, 
+                key="email_location_input"
+            )
+        
+        # Use session state values directly
+        client_name = st.session_state.email_client_name
+        ref_number = st.session_state.email_ref_number
+        location = st.session_state.email_location
+        
+        # Generate the report using session data and input values
+        client_table, email_html = generate_client_report_table_fixed(
+            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
+            client_name, ref_number, location
         )
-    with col_input2:
-        st.session_state.email_ref_number = st.text_input(
-            "Reference Number", 
-            value=st.session_state.email_ref_number, 
-            key="email_ref_number_input"
-        )
-    with col_input3:
-        st.session_state.email_location = st.text_input(
-            "Development Location", 
-            value=st.session_state.email_location, 
-            key="email_location_input"
-        )
-    
-    # Use session state values directly
-    client_name = st.session_state.email_client_name
-    ref_number = st.session_state.email_ref_number
-    location = st.session_state.email_location
-    
-    # Generate the report using session data and input values
-    client_table, email_html = generate_client_report_table_fixed(
-        session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-        client_name, ref_number, location
-    )
-    
+        
         
         # Display the table
         st.markdown("**Client Report Table:**")
