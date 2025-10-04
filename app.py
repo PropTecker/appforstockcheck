@@ -85,17 +85,15 @@ init_session_state()
 
 def reset_all_form_data():
     """Reset all form data to start a new quote"""
-    # Keep auth_ok and backend-related state (uploaded file handled by Streamlit widget automatically)
-    # Also preserve postcode/address for convenience
+    # Keep auth_ok, backend-related state, and postcode/address for convenience
     keys_to_keep = [
         "auth_ok",
         "postcode_input",
-        "address_input"
+        "address_input",
+        "backend_uploader",
+        "use_example_backend",
+        "quotes_policy"
     ]
-    
-    # Store backend state to preserve
-    backend_state = {}
-    # Note: uploaded file is handled by st.file_uploader widget state automatically
     
     for key in list(st.session_state.keys()):
         if key not in keys_to_keep:
@@ -326,16 +324,18 @@ def select_contract_size(total_units: float, present: List[str]) -> str:
 # ================= Sidebar: backend =================
 with st.sidebar:
     st.subheader("Backend")
-    uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"])
+    uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"], key="backend_uploader")
     if not uploaded:
         st.info("Or use an example backend in ./data", icon="ℹ️")
     use_example = st.checkbox("Use example backend from ./data",
-                              value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()))
+                              value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()),
+                              key="use_example_backend")
     quotes_hold_policy = st.selectbox(
         "Quotes policy for stock availability",
         ["Ignore quotes (default)", "Quotes hold 100%", "Quotes hold 50%"],
         index=0,
-        help="How to treat 'quoted' units when computing quantity_available."
+        help="How to treat 'quoted' units when computing quantity_available.",
+        key="quotes_policy"
     )
 
 @st.cache_data
