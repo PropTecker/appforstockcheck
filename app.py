@@ -1672,210 +1672,6 @@ if run:
         if "price_source" in alloc_df.columns:
             st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
 
-        # ========== COMPREHENSIVE PRICING BREAKDOWN ==========
-        st.markdown("---")
-        st.markdown("#### 📊 Comprehensive Pricing Analysis")
-        
-        # 1. PRICING SOURCE DETAILED BREAKDOWN
-        st.markdown("##### 🎯 Pricing Source Analysis")
-        
-        pricing_detail = []
-        for _, row in alloc_df.iterrows():
-            pricing_detail.append({
-                "Bank": row["bank_name"],
-                "Demand Habitat": row["demand_habitat"],
-                "Supply Habitat": row["supply_habitat"],
-                "Units": f"{row['units_supplied']:.2f}",
-                "Unit Price": f"£{row['unit_price']:,.0f}",
-                "Total Cost": f"£{row['cost']:,.0f}",
-                "Pricing Source": row["price_source"],
-                "Price Habitat Used": row["price_habitat"],
-                "Tier": row["tier"],
-                "Allocation Type": row["allocation_type"]
-            })
-        
-        pricing_df = pd.DataFrame(pricing_detail)
-        st.dataframe(pricing_df, use_container_width=True, hide_index=True)
-        
-        # Pricing source explanations
-        st.markdown("**Pricing Source Legend:**")
-        pricing_sources = {
-            "exact": "✅ **Exact Match** - Found exact pricing for this habitat, bank, and tier",
-            "group-proxy": "🔄 **Group Proxy** - Used same habitat group or higher distinctiveness pricing", 
-            "any-low-proxy": "⚡ **Low Proxy** - Used cheapest available pricing for this bank/tier (Low distinctiveness rule)"
-        }
-        
-        source_counts = alloc_df["price_source"].value_counts()
-        for source, count in source_counts.items():
-            if source in pricing_sources:
-                st.caption(f"{pricing_sources[source]} ({count} allocation{'s' if count != 1 else ''})")
-        
-        # 2. PAIRED HABITAT DETAILED BREAKDOWN
-        paired_allocs = alloc_df[alloc_df["allocation_type"] == "paired"].copy()
-        if not paired_allocs.empty:
-            st.markdown("##### 🌳 Paired Habitat Breakdown (Orchard + Scrub)")
-            
-            paired_expanded = []
-            for _, row in paired_allocs.iterrows():
-                try:
-                    parts = json.loads(row.get("paired_parts", "[]"))
-                    if len(parts) == 2:
-                        total_units = row['units_supplied']
-                        units_each = total_units / 2
-                        
-                        for part in parts:
-                            habitat_name = part.get("habitat", "Unknown")
-                            unit_price = part.get("unit_price", 0)
-                            cost_this = units_each * unit_price
-                            
-                            paired_expanded.append({
-                                "Bank": row["bank_name"],
-                                "Demand": row["demand_habitat"],
-                                "Individual Habitat": habitat_name,
-                                "Units (this habitat)": f"{units_each:.2f}",
-                                "Unit Price": f"£{unit_price:,.0f}",
-                                "Cost (this habitat)": f"£{cost_this:,.0f}",
-                                "Tier": row["tier"],
-                                "Combined Supply": row["supply_habitat"],
-                                "Total Paired Cost": f"£{row['cost']:,.0f}"
-                            })
-                except Exception as e:
-                    st.warning(f"Could not parse paired details for {row['bank_name']}: {e}")
-            
-            if paired_expanded:
-                paired_df = pd.DataFrame(paired_expanded)
-                st.dataframe(paired_df, use_container_width=True, hide_index=True)
-                
-                st.info("""
-                **Paired Habitat Rules:**
-                - Used for Medium distinctiveness demands at Far tier
-                - 50% Traditional Orchard + 50% Scrub/Mixed Scrub
-                - Each habitat priced separately then combined
-                - Provides cost-effective solution for medium distinctiveness requirements
-                """)
-        
-        # 3. BANK-BY-BANK DETAILED ANALYSIS
-        st.markdown("##### 🏦 Bank-by-Bank Analysis")
-        
-        for bank_key in alloc_df["BANK_KEY"].unique():
-            bank_allocs = alloc_df[alloc_df["BANK_KEY"] == bank_key].copy()
-            bank_name = bank_allocs["bank_name"].iloc[0]
-            total_bank_cost = bank_allocs["cost"].sum()
-            total_bank_units = bank_allocs["units_supplied"].sum()
-            
-            # Get bank location info
-            bank_info = backend["Banks"][backend["Banks"]["BANK_KEY"] == bank_key]
-            if not bank_info.empty:
-                bank_data = bank_info.iloc[0]
-                bank_lpa = bank_data.get("lpa_name", "Unknown")
-                bank_nca = bank_data.get("nca_name", "Unknown")
-            else:
-                bank_lpa = bank_nca = "Unknown"
-            
-            with st.expander(f"🏢 {bank_name} - £{total_bank_cost:,.0f} ({total_bank_units:.2f} units)", expanded=False):
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    st.markdown("**Bank Location:**")
-                    st.write(f"📍 LPA: {bank_lpa}")
-                    st.write(f"🌿 NCA: {bank_nca}")
-                    st.write(f"🎯 Tier: {bank_allocs['tier'].iloc[0]}")
-                
-                with col2:
-                    st.markdown("**Bank Totals:**")
-                    st.metric("Total Cost", f"£{total_bank_cost:,.0f}")
-                    st.metric("Total Units", f"{total_bank_units:.2f}")
-                    st.metric("Avg Unit Price", f"£{total_bank_cost/total_bank_units:,.0f}")
-                
-                st.markdown("**Habitat Details:**")
-                bank_detail = []
-                for _, alloc in bank_allocs.iterrows():
-                    bank_detail.append({
-                        "Demand": alloc["demand_habitat"],
-                        "Supply": alloc["supply_habitat"],
-                        "Type": alloc["allocation_type"],
-                        "Units": f"{alloc['units_supplied']:.2f}",
-                        "Unit Price": f"£{alloc['unit_price']:,.0f}",
-                        "Cost": f"£{alloc['cost']:,.0f}",
-                        "Pricing": alloc["price_source"]
-                    })
-                
-                bank_df = pd.DataFrame(bank_detail)
-                st.dataframe(bank_df, use_container_width=True, hide_index=True)
-        
-        # 4. TIER AND SPATIAL ANALYSIS
-        st.markdown("##### 📍 Spatial Tier Analysis")
-        
-        tier_summary = alloc_df.groupby("tier").agg({
-            "units_supplied": "sum",
-            "cost": "sum",
-            "BANK_KEY": "nunique"
-        }).reset_index()
-        tier_summary["avg_unit_price"] = tier_summary["cost"] / tier_summary["units_supplied"]
-        tier_summary.columns = ["Tier", "Total Units", "Total Cost", "Banks Used", "Avg Unit Price"]
-        tier_summary["Total Cost"] = tier_summary["Total Cost"].apply(lambda x: f"£{x:,.0f}")
-        tier_summary["Avg Unit Price"] = tier_summary["Avg Unit Price"].apply(lambda x: f"£{x:,.0f}")
-        
-        st.dataframe(tier_summary, use_container_width=True, hide_index=True)
-        
-        # Spatial multiplier explanation
-        st.info("""
-        **Spatial Risk Multipliers (applied to effective units):**
-        - 🟢 **Local** (1.0x): Same LPA or NCA as target site
-        - 🟡 **Adjacent** (1.33x): Neighboring LPA or NCA to target site  
-        - 🔴 **Far** (2.0x): Distant from target site
-        
-        *Note: Multipliers affect effective habitat delivery, not unit pricing*
-        """)
-        
-        # 5. EFFECTIVE UNITS CALCULATION
-        st.markdown("##### ⚖️ Effective Units Analysis")
-        
-        MULT = {"local": 1.0, "adjacent": 1.33, "far": 2.0}
-        
-        effective_breakdown = []
-        for _, row in alloc_df.iterrows():
-            multiplier = MULT.get(row["tier"].lower(), 1.0)
-            effective_units = row["units_supplied"] * multiplier
-            
-            effective_breakdown.append({
-                "Bank": row["bank_name"],
-                "Supply Habitat": row["supply_habitat"],
-                "Tier": row["tier"],
-                "Raw Units": f"{row['units_supplied']:.2f}",
-                "Multiplier": f"{multiplier}x",
-                "Effective Units": f"{effective_units:.2f}",
-                "Cost per Effective Unit": f"£{row['cost']/effective_units:,.0f}"
-            })
-        
-        effective_df = pd.DataFrame(effective_breakdown)
-        st.dataframe(effective_df, use_container_width=True, hide_index=True)
-        
-        # 6. OPTIMIZATION SUMMARY
-        st.markdown("##### 🎯 Optimization Summary")
-        
-        optimization_stats = {
-            "Contract Size Selected": size,
-            "Banks Used": f"{alloc_df['BANK_KEY'].nunique()} (max 2 allowed)",
-            "Total Raw Units": f"{alloc_df['units_supplied'].sum():.2f}",
-            "Total Effective Units": f"{sum(row['units_supplied'] * MULT.get(row['tier'].lower(), 1.0) for _, row in alloc_df.iterrows()):.2f}",
-            "Average Unit Price": f"£{total_cost/alloc_df['units_supplied'].sum():,.0f}",
-            "Price Range": f"£{alloc_df['unit_price'].min():,.0f} - £{alloc_df['unit_price'].max():,.0f}"
-        }
-        
-        col1, col2, col3 = st.columns([1, 1, 1])
-        for i, (metric, value) in enumerate(optimization_stats.items()):
-            with [col1, col2, col3][i % 3]:
-                st.metric(metric, value)
-        
-        st.success("""
-        **Optimization Method:**
-        1. **Cost Minimization** - Found lowest total cost solution
-        2. **Bank Minimization** - Reduced banks used (within 1% cost increase)
-        3. **Final Optimization** - Re-minimized cost with selected banks
-        """)
-
-        
         # ---------- Site/Habitat totals (effective units, with accurate split pricing) ----------
         st.markdown("#### Site/Habitat totals (effective units)")
 
@@ -1995,7 +1791,7 @@ if run:
 # ================= Fixed Email Report Generation Function =================
 def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
                                        client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
-    """Generate the client-facing report table and email body matching exact template with improved styling"""
+    """Generate the client-facing report table and email body matching exact template - NO INPUTS"""
     
     # Separate by habitat types
     area_habitats = []
@@ -2062,33 +1858,33 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     total_with_admin = total_cost + admin_fee
     
-    # Build HTML table with improved styling (30% narrower, better colors)
+    # Build HTML table matching exact format
     html_table = """
-    <table border="1" style="border-collapse: collapse; width: 70%; margin: 0 auto; font-family: Arial, sans-serif; font-size: 11px;">
+    <table border="1" style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 11px;">
         <thead>
-            <tr>
-                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Development Impact</th>
-                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
+            <tr style="background-color: #f0f0f0;">
+                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Development Impact</th>
+                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold;">Mitigation Supplied from Wild Capital</th>
             </tr>
-            <tr>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Habitats Lost</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Habitats Supplied</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Price Per Unit</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Offset Cost</th>
+            <tr style="background-color: #f8f8f8;">
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold;">Offset Cost</th>
             </tr>
         </thead>
         <tbody>
     """
     
-    # Add Area Habitats section with light green background
+    # Add Area Habitats section
     if area_habitats:
         html_table += """
-            <tr style="background-color: #90EE90;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Area Habitats</td>
+            <tr style="background-color: #e0e0e0;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Area Habitats</td>
             </tr>
         """
         for habitat in area_habitats:
@@ -2105,11 +1901,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Hedgerow Habitats section with light green background
+    # Add Hedgerow Habitats section
     if hedgerow_habitats:
         html_table += """
-            <tr style="background-color: #90EE90;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Hedgerow Habitats</td>
+            <tr style="background-color: #e0e0e0;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Hedgerow Habitats</td>
             </tr>
         """
         for habitat in hedgerow_habitats:
@@ -2126,11 +1922,11 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Watercourse Habitats section with light green background
+    # Add Watercourse Habitats section
     if watercourse_habitats:
         html_table += """
-            <tr style="background-color: #90EE90;">
-                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Watercourse Habitats</td>
+            <tr style="background-color: #e0e0e0;">
+                <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Watercourse Habitats</td>
             </tr>
         """
         for habitat in watercourse_habitats:
@@ -2149,8 +1945,8 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     # Add Spatial Risk Multiplier section (placeholder)
     html_table += """
-        <tr style="background-color: #90EE90;">
-            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
+        <tr style="background-color: #e0e0e0;">
+            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold;">Spatial Risk Multiplier</td>
         </tr>
         <tr>
             <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
@@ -2255,31 +2051,41 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     
     return report_df, email_body
 
-# Add this section right before the email generation section (around line 1950)
-
-# ================= Client Report Form =================
-# Initialize email inputs in session state (only if not exists)
-if "email_client_name" not in st.session_state:
-    st.session_state.email_client_name = "INSERT NAME"
-if "email_ref_number" not in st.session_state:
-    st.session_state.email_ref_number = "BNG00XXX"
-if "email_location" not in st.session_state:
-    st.session_state.email_location = "INSERT LOCATION"
-
-# Email generation section - ONLY runs if optimization is complete
+# Add this to your optimization results section (after the downloads):
 if (st.session_state.get("optimization_complete", False) and 
     isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
     not st.session_state["last_alloc_df"].empty):
     
+    # Get data from session state
+    session_alloc_df = st.session_state["last_alloc_df"]
+    
+    # Reconstruct demand_df from session state
+    session_demand_df = pd.DataFrame(
+        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
+         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
+    )
+    
+    # Calculate total cost from session data
+    session_total_cost = session_alloc_df["cost"].sum()
+    
     st.markdown("---")
     st.markdown("#### 📧 Client Report Generation")
     
-    with st.expander("Generate Client Email Report", expanded=True):
+    # Initialize email inputs in session state (only if not exists)
+    if "email_client_name" not in st.session_state:
+        st.session_state.email_client_name = "INSERT NAME"
+    if "email_ref_number" not in st.session_state:
+        st.session_state.email_ref_number = "BNG00XXX"
+    if "email_location" not in st.session_state:
+        st.session_state.email_location = "INSERT LOCATION"
+    
+    with st.expander("Generate Client Email Report", expanded=False):
         st.markdown("**Generate a client-facing report table and email:**")
         
-        # ========== FORM WITH PERSISTENCE ==========
+        # ========== FIXED INPUTS - NO CALLBACKS ==========
+        st.markdown("**📝 Email Details:**")
+
         with st.form("client_email_form", clear_on_submit=False):
-            st.markdown("**📝 Email Details:**")
             col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
             
             with col_input1:
@@ -2305,26 +2111,20 @@ if (st.session_state.get("optimization_complete", False) and
             
             # Form submit button
             form_submitted = st.form_submit_button("Update Email Details")
+            
+            # Only update session state when form is submitted
+            if form_submitted:
+                st.session_state.email_client_name = form_client_name
+                st.session_state.email_ref_number = form_ref_number
+                st.session_state.email_location = form_location
+                st.success("Email details updated!")
         
-        # Handle form submission OUTSIDE the form but INSIDE the expander
-        if form_submitted:
-            st.session_state.email_client_name = form_client_name
-            st.session_state.email_ref_number = form_ref_number
-            st.session_state.email_location = form_location
-            st.success("Email details updated!")
-        
-        # Use the current values from session state
+        # Use the session state values for generating the report
         client_name = st.session_state.email_client_name
         ref_number = st.session_state.email_ref_number
-        location = st.session_state.email_location
-        session_alloc_df = st.session_state["last_alloc_df"]
-        session_demand_df = pd.DataFrame(
-            [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
-             for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
-        )
-        session_total_cost = session_alloc_df["cost"].sum()
+        location = st.session_state.email_location    
         
-        # Generate the report
+        # Generate the report using session data and input values
         client_table, email_html = generate_client_report_table_fixed(
             session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
             client_name, ref_number, location
@@ -2347,110 +2147,50 @@ if (st.session_state.get("optimization_complete", False) and
                            "Price Per Unit", "Offset Cost"]
             
             st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
-
-# Email generation section - ONLY runs if optimization is complete
-if (st.session_state.get("optimization_complete", False) and 
-    isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
-    not st.session_state["last_alloc_df"].empty):
-    
-    # Use the current values from session state
-    client_name = st.session_state.email_client_name
-    ref_number = st.session_state.email_ref_number
-    location = st.session_state.email_location
-    session_alloc_df = st.session_state["last_alloc_df"]
-    session_demand_df = pd.DataFrame(
-        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
-         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
-    )
-    session_total_cost = session_alloc_df["cost"].sum()
-    
-    # Generate the report
-    client_table, email_html = generate_client_report_table_fixed(
-        session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-        client_name, ref_number, location
-    )
-    
-    # Email generation
-    st.markdown("**📧 Email Generation:**")
-    
-    col1, col2, col3 = st.columns([1, 1, 1])
-
-    
-    with col1:
-        # Create .eml file content
-        from email.mime.multipart import MIMEMultipart
-        from email.mime.text import MIMEText
         
-        subject = f"BNG Quote {ref_number} - {location}"
-        total_with_admin = session_total_cost + ADMIN_FEE_GBP
+        # Email generation
+        st.markdown("**📧 Email Generation:**")
         
-        # Create email message
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
-        msg['To'] = ''  # Will be filled by user
+        col1, col2 = st.columns([1, 1])
         
-        # Create text version for email clients that don't support HTML
-        text_body = f"""Dear {client_name}
-
-Our Ref: {ref_number}
-
-Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
-
-Thank you for enquiring about BNG Units for your development in {location}
-
-About Us
-
-Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
-
-Your Quote - £{total_with_admin:,.0f} + VAT
-
-[Please view the HTML version of this email for the detailed pricing breakdown table]
-
-Total Units Required: {session_demand_df['units_required'].sum():.2f}
-Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
-Total Cost: £{total_with_admin:,.0f} + VAT
-
-Next Steps
-BNG is a pre-commencement, not a pre-planning, condition.
-
-To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-
-If you have any questions, please reply to this email or call 01962 436574.
-
-Best regards,
-Wild Capital Team"""
+        with col1:
+            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
+                st.code(email_html, language="html")
+                st.success("Email HTML generated! Copy the code above and paste into your email client.")
         
-        # Attach text and HTML versions
-        text_part = MIMEText(text_body, 'plain')
-        html_part = MIMEText(email_html, 'html')
+        with col2:
+            subject = f"BNG Quote {ref_number} - {location}"
+            total_with_admin = session_total_cost + ADMIN_FEE_GBP
+            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+            
+            mailto_link = f"mailto:?subject={subject}&body={simple_body}"
+            st.markdown(f"[📧 Open Email Client]({mailto_link})")
         
-        msg.attach(text_part)
-        msg.attach(html_part)
+        # Download options
+        st.markdown("**📥 Download Options:**")
         
-        # Convert to string
-        eml_content = msg.as_string()
+        col3, col4 = st.columns([1, 1])
         
-        # Download button for .eml file
-        st.download_button(
-            "📧 Download Email (.eml)",
-            data=eml_content,
-            file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-            mime="message/rfc822",
-            help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-        )
-    
-    with col3:
-        # Simple mailto fallback
-        import urllib.parse
+        with col3:
+            if not client_table.empty:
+                csv_data = display_table[cols_to_show].to_csv(index=False)
+                st.download_button(
+                    "Download Client Table (CSV)",
+                    data=csv_data,
+                    file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv",
+                    key="download_client_table_csv"
+                )
         
-        encoded_subject = urllib.parse.quote(subject)
-        simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
-        encoded_simple = urllib.parse.quote(simple_body)
-        
-        mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
-        st.markdown(f"[📧 Quick Email]({mailto_link})")
-                        
+        with col4:
+            st.download_button(
+                "Download Email HTML",
+                data=email_html,
+                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
+                mime="text/html",
+                key="download_email_html"
+            )
+            
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
@@ -2474,6 +2214,13 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
+
+
+
+
+
+
+
 
 
 
