@@ -1,24 +1,9 @@
-# app.py — BNG Optimiser (Standalone), v9.3
-# Updates vs v9:
-# - Strictly exclude Hedgerow everywhere (demand, stock, pricing, candidates, proxies).
-# - Two-stage MILP lexicographic optimisation:
-#     Stage 1: minimise total FAR units (subject to ≤2 banks & all constraints).
-#     Stage 2: fix FAR to the minimum and minimise pure cost (no bank-count penalty),
-#              with a tiny tie-break to prefer FAR paired over FAR normal only on exact ties.
-# - Orchard/Scrub paired options always generated for MEDIUM so FAR can use them first.
-# - Greedy fallback mirrors the policy: local/adjacent → FAR paired → FAR normal.
-# - Scrub detection fixed (no str_contains, no duplicate kwargs).
-#
-# requirements.txt:
-# streamlit>=1.37
-# pandas>=2.1
-# numpy>=1.26
-# requests>=2.31
-# streamlit-folium>=0.18
-# folium>=0.16
-# openpyxl>=3.1
-# xlsxwriter>=3.2
-# pulp>=2.7  # optional; greedy fallback if missing
+# app.py — BNG Optimiser (Standalone), v9.4
+# Changes vs v9.3:
+# - Fix "Add habitat" double-click effect by forcing immediate rerun after add/delete.
+# - Map robustness: guard render_base_map when no coords; try/except per-bank overlay; cached bank catchments.
+# - Stage 2 MILP objective is pure cost given FAR fixed (no tiny eps tie-breaks) so FAR choices are always the cheapest.
+# - Keep: strict Hedgerow exclusion; Orchard/Scrub pairing for Medium; ≤2 banks; diagnostics; overlays.
 
 import json
 import re
@@ -66,7 +51,7 @@ def require_login():
         st.session_state.auth_ok = False
     if st.session_state.auth_ok:
         with st.sidebar:
-            if st.button("Log out"):
+            if st.button("Log out", key="logout_btn"):
                 st.session_state.auth_ok = False
                 st.rerun()
         return
@@ -207,9 +192,6 @@ def get_lpa_nca_for_point(lat: float, lon: float) -> Tuple[str, str]:
     return lpa, nca
 
 def get_catchment_geo_for_point(lat: float, lon: float) -> Tuple[str, Optional[Dict[str, Any]], str, Optional[Dict[str, Any]]]:
-    """
-    Returns (lpa_name, lpa_geojson, nca_name, nca_geojson) for a given point.
-    """
     lpa_feat = arcgis_point_query(LPA_URL, lat, lon, "LAD24NM")
     nca_feat = arcgis_point_query(NCA_URL, lat, lon, "NCA_Name")
     lpa_name = sstr((lpa_feat.get("attributes") or {}).get("LAD24NM"))
@@ -217,7 +199,6 @@ def get_catchment_geo_for_point(lat: float, lon: float) -> Tuple[str, Optional[D
     lpa_gj = esri_polygon_to_geojson(lpa_feat.get("geometry"))
     nca_gj = esri_polygon_to_geojson(nca_feat.get("geometry"))
     return lpa_name, lpa_gj, nca_name, nca_gj
-
 
 # ========= Tiering =========
 def tier_for_bank(bank_lpa: str, bank_nca: str,
@@ -410,11 +391,10 @@ def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     if "broader_type" not in df.columns: df["broader_type"] = ""
     if "distinctiveness_name" not in df.columns: df["distinctiveness_name"] = ""
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
-    # 🚫 Never price Hedgerow rows
-    df = df[~df["habitat_name"].map(is_hedgerow)].copy()
+    df = df[~df["habitat_name"].map(is_hedgerow)].copy()  # 🚫 never price Hedgerow
     return df
 
-# Apply hedgerow filter to Stock upfront (belt & braces)
+# Apply hedgerow filter to Stock (belt & braces)
 backend["Stock"] = backend["Stock"][~backend["Stock"]["habitat_name"].map(is_hedgerow)].copy()
 backend["Pricing"] = normalise_pricing(backend["Pricing"])
 
@@ -434,7 +414,7 @@ with st.container():
     with c2:
         address = st.text_input("Address (if no postcode)", value="")
     with c3:
-        run_locate = st.button("Locate")
+        run_locate = st.button("Locate", key="locate_btn")
 
 # Restore session
 target_lpa_name = st.session_state.get("target_lpa_name", "")
@@ -490,6 +470,11 @@ if run_locate:
         st.error(f"Location error: {e}")
 
 def render_base_map():
+    # Guard: if no target coords yet, return a safe UK-wide map
+    if target_lat is None or target_lon is None:
+        fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
+        folium.LayerControl(collapsed=True).add_to(fmap)
+        return fmap
     fmap = folium.Map(location=[target_lat, target_lon], zoom_start=11, control_scale=True)
     add_geojson_layer(fmap, lpa_geojson, f"LPA: {target_lpa_name}" if target_lpa_name else "LPA", color="red", weight=2, fill_opacity=0.05)
     add_geojson_layer(fmap, nca_geojson, f"NCA: {target_nca_name}" if target_nca_name else "NCA", color="yellow", weight=3, fill_opacity=0.05)
@@ -537,22 +522,28 @@ with st.container(border=True):
                 to_delete.append(row["id"])
     if to_delete:
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
+        st.rerun()  # immediate refresh after delete
+
     cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
     with cc1:
-        if st.button("➕ Add habitat"):
+        if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
                 {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
             )
             st.session_state._next_row_id += 1
+            st.rerun()  # immediate refresh
     with cc2:
-        if st.button("➕ Net Gain (Low-equivalent)", help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
+        if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
+                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
             st.session_state.demand_rows.append(
                 {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
             )
             st.session_state._next_row_id += 1
+            st.rerun()  # immediate refresh
     with cc3:
-        if st.button("🧹 Clear all"):
-            init_demand_state(); st.rerun()
+        if st.button("🧹 Clear all", key="clear_all_btn"):
+            init_demand_state()
+            st.rerun()
 
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
 st.metric("Total units", f"{total_units:.2f}")
@@ -632,7 +623,7 @@ def prepare_options(demand_df: pd.DataFrame,
 
     Stock = make_bank_key_col(Stock, Banks)
 
-    # Attach group/distinctiveness; filter Hedgerow out (belt & braces)
+    # Attach group/distinctiveness; filter Hedgerow out
     stock_full = Stock.merge(
         Banks[["bank_id","bank_name","lpa_name","nca_name"]],
         on="bank_id", how="left"
@@ -641,7 +632,7 @@ def prepare_options(demand_df: pd.DataFrame,
 
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
 
-    # Enrich pricing with group/distinctiveness and drop Hedgerow here too
+    # Enrich pricing with group/distinctiveness and drop Hedgerow
     Catalog_cols = ["habitat_name", "broader_type", "distinctiveness_name"]
     pc_join = pricing_cs.merge(
         Catalog[Catalog_cols], on="habitat_name", how="left", suffixes=("", "_cat")
@@ -768,7 +759,7 @@ def prepare_options(demand_df: pd.DataFrame,
             explicit = True
             for _, rule in Trading[Trading["demand_habitat"] == dem_hab].iterrows():
                 sh = sstr(rule["allowed_supply_habitat"])
-                if is_hedgerow(sh):  # block hedgerow explicitly listed
+                if is_hedgerow(sh):
                     continue
                 s_min = sstr(rule.get("min_distinctiveness_name"))
                 df_s = stock_full[stock_full["habitat_name"] == sh].copy()
@@ -944,19 +935,13 @@ def optimise(demand_df: pd.DataFrame,
 
         Fstar = pulp.value(far_usage) or 0.0
 
-        # Stage 2: minimise cost given FAR fixed (prefer FAR paired over FAR normal only on ties)
+        # Stage 2: PURE COST given FAR fixed (no epsilon biases)
         prob2 = pulp.LpProblem("BNG_MinCost_givenMinFar", pulp.LpMinimize)
         x2 = [pulp.LpVariable(f"x2_{i}", lowBound=0) for i in range(len(options))]
         y2 = {b: pulp.LpVariable(f"y2_{norm_name(b)}", lowBound=0, upBound=1, cat="Binary") for b in bank_keys}
 
         cost_term = pulp.lpSum([options[i]["unit_price"] * x2[i] for i in range(len(options))])
-        eps_far_norm  = 1e-6
-        eps_far_paired = -1e-6  # prefer paired FAR on exact ties only
-
-        far_norm_use = pulp.lpSum([x2[i] for i, o in enumerate(options) if o["proximity"] == "far" and o["type"] == "normal"])
-        far_pair_use = pulp.lpSum([x2[i] for i, o in enumerate(options) if o["proximity"] == "far" and o["type"] == "paired"])
-
-        prob2 += cost_term + eps_far_norm * far_norm_use + eps_far_paired * far_pair_use
+        prob2 += cost_term
 
         # Link x to bank y
         for i, opt in enumerate(options):
@@ -1007,7 +992,6 @@ def optimise(demand_df: pd.DataFrame,
 
     except Exception:
         # ---- Greedy fallback with same policy ----
-        # buckets
         local_adj = [i for i, o in enumerate(options) if o["proximity"] in ("local","adjacent")]
         far_paired = [i for i, o in enumerate(options) if o["proximity"] == "far" and o["type"] == "paired"]
         far_normal = [i for i, o in enumerate(options) if o["proximity"] == "far" and o["type"] == "normal"]
@@ -1060,7 +1044,7 @@ def optimise(demand_df: pd.DataFrame,
             need = float(drow["units_required"])
             need = take_from(local_adj, need, di)   # 1) local/adjacent
             need = take_from(far_paired, need, di)  # 2) FAR paired
-            need = take_from(far_normal, need, di)  # 3) FAR normal
+            need = take_from(far_normal, need, di)  # 3) FAR normal (sorted by price -> cheapest first)
             if need > 1e-6:
                 raise RuntimeError("Infeasible even in greedy fallback.")
 
@@ -1071,7 +1055,7 @@ def optimise(demand_df: pd.DataFrame,
 st.subheader("3) Run optimiser")
 left, right = st.columns([1,1])
 with left:
-    run = st.button("Optimise now", type="primary", disabled=demand_df.empty)
+    run = st.button("Optimise now", type="primary", disabled=demand_df.empty, key="optimise_btn")
 with right:
     if target_lpa_name or target_nca_name:
         st.caption(f"LPA: {target_lpa_name or '—'} | NCA: {target_nca_name or '—'} | "
@@ -1125,16 +1109,14 @@ with st.expander("🔎 Diagnostics", expanded=False):
                 if "price_source" in cand_df.columns:
                     st.caption("Note: `price_source='group-proxy'` means we priced using group/distinctiveness rows.")
 
-                # Optional: cheapest adjacent by bank quick view for MEDIUM Orchard/Scrub
+                # Optional: cheapest adjacent/local snapshot
                 try:
-                    med_demands = [h for h in dd["habitat_name"].unique() if h != NET_GAIN_LABEL]
-                    if med_demands:
+                    snap = cand_df[cand_df["proximity"].isin(["local","adjacent"])].copy()
+                    if not snap.empty:
                         st.caption("Cheapest by bank snapshot (adjacent/local pooled):")
-                        snap = cand_df[cand_df["proximity"].isin(["local","adjacent"])].copy()
-                        if not snap.empty:
-                            tbl = snap.groupby(["demand_habitat","BANK_KEY","bank_name","allocation_type"], as_index=False)\
-                                      .agg(min_price=("unit_price","min"))
-                            st.dataframe(tbl.sort_values(["demand_habitat","min_price"]), use_container_width=True, hide_index=True)
+                        tbl = snap.groupby(["demand_habitat","BANK_KEY","bank_name","allocation_type"], as_index=False)\
+                                  .agg(min_price=("unit_price","min"))
+                        st.dataframe(tbl.sort_values(["demand_habitat","min_price"]), use_container_width=True, hide_index=True)
                 except Exception:
                     pass
 
@@ -1307,60 +1289,60 @@ if run:
             if 'alloc_df' in locals() and not alloc_df.empty:
                 grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
                 for (bkey, bname), g in grouped:
-                    latlon = bank_coords.get(sstr(bkey))
-                    if not latlon:
-                        continue
-                    lat_b, lon_b = latlon
-                    # --- Draw the bank's catchment perimeters (LPA & NCA) ---
-                    bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
-                    cache_key = sstr(bkey)
-            
-                    if cache_key not in bank_catch_cache:
-                        try:
-                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                            bank_catch_cache[cache_key] = {
-                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                            }
-                        except Exception as _e:
-                            bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
-            
-                    bgeo = bank_catch_cache[cache_key]
-                    # Use distinct colours from the target site (target uses red/yellow)
-                    add_geojson_layer(
-                        fmap,
-                        bgeo.get("lpa_gj"),
-                        name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
-                        color="green",  # bank LPA perimeter
-                        weight=2, fill_opacity=0.03
-                    )
-                    add_geojson_layer(
-                        fmap,
-                        bgeo.get("nca_gj"),
-                        name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
-                        color="blue",   # bank NCA perimeter
-                        weight=3, fill_opacity=0.03
-                    )
+                    try:
+                        latlon = bank_coords.get(sstr(bkey))
+                        if not latlon:
+                            continue
+                        lat_b, lon_b = latlon
 
-                    popup_lines = []
-                    total_units_b = g["units_supplied"].sum()
-                    total_cost_b = g["cost"].sum()
-                    popup_lines.append(f"<b>Bank:</b> {sstr(bname) or sstr(bkey)}")
-                    popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
-                    popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
-                    popup_lines.append("<b>Breakdown:</b>")
-                    for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
-                        popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
-                    folium.Marker(
-                        [lat_b, lon_b],
-                        icon=folium.Icon(color="green", icon="leaf"),
-                        popup=folium.Popup("<br>".join(popup_lines), max_width=420)
-                    ).add_to(fmap)
-                    folium.PolyLine(
-                        locations=[[target_lat, target_lon], [lat_b, lon_b]],
-                        weight=2, opacity=0.8, dash_array="6,6", color="blue",
-                        tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
-                    ).add_to(fmap)
+                        # --- Draw the bank's catchment perimeters (LPA & NCA) ---
+                        bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
+                        cache_key = sstr(bkey)
+                        if cache_key not in bank_catch_cache:
+                            try:
+                                b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                                bank_catch_cache[cache_key] = {
+                                    "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                                    "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                                }
+                            except Exception:
+                                bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+
+                        bgeo = bank_catch_cache[cache_key]
+                        add_geojson_layer(
+                            fmap, bgeo.get("lpa_gj"),
+                            name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                            color="green", weight=2, fill_opacity=0.03
+                        )
+                        add_geojson_layer(
+                            fmap, bgeo.get("nca_gj"),
+                            name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                            color="blue", weight=3, fill_opacity=0.03
+                        )
+
+                        # Marker + route
+                        popup_lines = []
+                        total_units_b = g["units_supplied"].sum()
+                        total_cost_b = g["cost"].sum()
+                        popup_lines.append(f"<b>Bank:</b> {sstr(bname) or sstr(bkey)}")
+                        popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
+                        popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
+                        popup_lines.append("<b>Breakdown:</b>")
+                        for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
+                            popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
+
+                        folium.Marker(
+                            [lat_b, lon_b],
+                            icon=folium.Icon(color="green", icon="leaf"),
+                            popup=folium.Popup("<br>".join(popup_lines), max_width=420)
+                        ).add_to(fmap)
+                        folium.PolyLine(
+                            locations=[[target_lat, target_lon], [lat_b, lon_b]],
+                            weight=2, opacity=0.8, dash_array="6,6", color="blue",
+                            tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
+                        ).add_to(fmap)
+                    except Exception as map_e:
+                        st.caption(f"Skipped map overlay for bank {sstr(bname) or sstr(bkey)}: {map_e}")
 
             st.markdown("### Map (with selected supply)")
             st_folium(fmap, height=520, returned_objects=[], use_container_width=True)
@@ -1381,6 +1363,7 @@ if run:
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
+
 
 
 
