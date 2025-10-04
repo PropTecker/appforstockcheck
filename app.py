@@ -2050,106 +2050,9 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
-
-# Add this to your optimization results section (after the downloads):
-if (st.session_state.get("optimization_complete", False) and 
-    isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
-    not st.session_state["last_alloc_df"].empty):
-    
-    # Get data from session state
-    session_alloc_df = st.session_state["last_alloc_df"]
-    
-    # Reconstruct demand_df from session state
-    session_demand_df = pd.DataFrame(
-        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
-         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
-    )
-    
-    # Calculate total cost from session data
-    session_total_cost = session_alloc_df["cost"].sum()
-    
-    st.markdown("---")
-    st.markdown("#### 📧 Client Report Generation")
-    
-    # Initialize email inputs in session state (only if not exists)
-    if "email_client_name" not in st.session_state:
-        st.session_state.email_client_name = "INSERT NAME"
-    if "email_ref_number" not in st.session_state:
-        st.session_state.email_ref_number = "BNG00XXX"
-    if "email_location" not in st.session_state:
-        st.session_state.email_location = "INSERT LOCATION"
-    
-    with st.expander("Generate Client Email Report", expanded=True):  # Force it to stay expanded
-        st.markdown("**Generate a client-facing report table and email:**")
-        
-        # ========== FIXED FORM WITH PERSISTENCE ==========
-        with st.form("client_email_form", clear_on_submit=False):
-            st.markdown("**📝 Email Details:**")
-            col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
-            
-            with col_input1:
-                form_client_name = st.text_input(
-                    "Client Name", 
-                    value=st.session_state.email_client_name,
-                    key="form_client_name"
-                )
-            
-            with col_input2:
-                form_ref_number = st.text_input(
-                    "Reference Number", 
-                    value=st.session_state.email_ref_number,
-                    key="form_ref_number"
-                )
-            
-            with col_input3:
-                form_location = st.text_input(
-                    "Development Location", 
-                    value=st.session_state.email_location,
-                    key="form_location"
-                )
-            
-            # Form submit button
-            form_submitted = st.form_submit_button("Update Email Details")
-        
-        # Handle form submission OUTSIDE the form but INSIDE the expander
-        if form_submitted:
-            st.session_state.email_client_name = form_client_name
-            st.session_state.email_ref_number = form_ref_number
-            st.session_state.email_location = form_location
-            st.success("Email details updated!")
-            # Don't call st.rerun() - let it naturally update
-        
-        # Use the session state values for generating the report
-        client_name = st.session_state.email_client_name
-        ref_number = st.session_state.email_ref_number
-        location = st.session_state.email_location    
-        
-        # Generate the report using session data and input values
-        client_table, email_html = generate_client_report_table_fixed(
-            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-            client_name, ref_number, location
-        )
-        
-        # Display the table
-        st.markdown("**Client Report Table:**")
-        
-        # Format for display (clean up column names)
-        if not client_table.empty:
-            display_table = client_table.copy()
-            display_table = display_table.rename(columns={
-                "Distinctiveness_Supply": "Supply Distinctiveness",
-                "# Units_Supply": "Supply Units"
-            })
-            
-            # Remove empty development impact columns for display
-            cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
-                           "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
-                           "Price Per Unit", "Offset Cost"]
-            
-            st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
         
         # Email generation
-        # Enhanced email generation with .eml file creation and improved mailto options:
+        # Enhanced email generation with .eml file creation:
         st.markdown("**📧 Email Generation:**")
         
         col1, col2, col3 = st.columns([1, 1, 1])
@@ -2225,126 +2128,16 @@ if (st.session_state.get("optimization_complete", False) and
             )
         
         with col3:
-            # Enhanced mailto with HTML formatting attempts
+            # Simple mailto fallback
             import urllib.parse
             
             encoded_subject = urllib.parse.quote(subject)
+            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}"
+            encoded_simple = urllib.parse.quote(simple_body)
             
-            # Approach 1: Try to include HTML in body (some clients support this)
-            html_mailto_body = f"""<html><body>{email_html}</body></html>"""
-            encoded_html_body = urllib.parse.quote(html_mailto_body)
-            
-            # Approach 2: Rich text formatting with line breaks and formatting
-            formatted_text_body = f"""Dear {client_name}
-        
-        Our Ref: {ref_number}
-        
-        Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
-        
-        Thank you for enquiring about BNG Units for your development in {location}
-        
-        About Us
-        Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
-        
-        Your Quote - £{total_with_admin:,.0f} + VAT
-        
-        PRICING BREAKDOWN:
-        ═══════════════════════════════════════════════════════════════════
-        
-        DEVELOPMENT IMPACT                    |  MITIGATION SUPPLIED
-        ═══════════════════════════════════════════════════════════════════"""
-            
-            # Add table data in text format
-            all_habitats = []
-            
-            # Get habitat data (same logic as in the function)
-            for _, demand_row in session_demand_df.iterrows():
-                demand_habitat = demand_row["habitat_name"]
-                demand_units = demand_row["units_required"]
-                
-                matching_allocs = session_alloc_df[session_alloc_df["demand_habitat"] == demand_habitat]
-                
-                for _, alloc_row in matching_allocs.iterrows():
-                    if demand_habitat == NET_GAIN_LABEL:
-                        demand_distinctiveness = "10% Net Gain"
-                        demand_habitat_display = "Any"
-                    else:
-                        cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
-                        if not cat_match.empty:
-                            demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
-                            demand_habitat_display = demand_habitat
-                        else:
-                            demand_distinctiveness = "Medium"
-                            demand_habitat_display = demand_habitat
+            mailto_link = f"mailto:?subject={encoded_subject}&body={encoded_simple}"
+            st.markdown(f"[📧 Quick Email]({mailto_link})")
                     
-                    supply_habitat = alloc_row["supply_habitat"]
-                    supply_units = alloc_row["units_supplied"]
-                    unit_price = alloc_row["unit_price"]
-                    offset_cost = alloc_row["cost"]
-                    
-                    supply_cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == supply_habitat]
-                    if not supply_cat_match.empty:
-                        supply_distinctiveness = supply_cat_match["distinctiveness_name"].iloc[0]
-                    else:
-                        supply_distinctiveness = "Medium"
-                    
-                    all_habitats.append({
-                        "demand_dist": demand_distinctiveness,
-                        "demand_hab": demand_habitat_display,
-                        "demand_units": demand_units,
-                        "supply_dist": supply_distinctiveness,
-                        "supply_hab": supply_habitat,
-                        "supply_units": supply_units,
-                        "unit_price": unit_price,
-                        "cost": offset_cost
-                    })
-            
-            # Format table data as text
-            for habitat in all_habitats:
-                formatted_text_body += f"""
-        
-        {habitat["demand_dist"]} | {habitat["demand_hab"]} | {habitat["demand_units"]:.2f} units
-        → {habitat["supply_dist"]} | {habitat["supply_hab"]} | {habitat["supply_units"]:.2f} units
-           Price: £{habitat["unit_price"]:,.0f}/unit | Cost: £{habitat["cost"]:,.0f}"""
-            
-            formatted_text_body += f"""
-        
-        ═══════════════════════════════════════════════════════════════════
-        Planning Discharge Pack: £{ADMIN_FEE_GBP:,.0f}
-        TOTAL: £{total_with_admin:,.0f} + VAT
-        ═══════════════════════════════════════════════════════════════════
-        
-        Next Steps:
-        BNG is a pre-commencement, not a pre-planning, condition.
-        
-        To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-        
-        If you have any questions, please reply to this email or call 01962 436574.
-        
-        Best regards,
-        Wild Capital Team"""
-            
-            encoded_formatted_body = urllib.parse.quote(formatted_text_body)
-            
-            # Create multiple options
-            st.markdown("**📧 Quick Email Options:**")
-            
-            # Option 1: Formatted text version (most reliable)
-            mailto_formatted = f"mailto:?subject={encoded_subject}&body={encoded_formatted_body}"
-            st.markdown(f"[📧 Rich Text Email]({mailto_formatted})")
-            st.caption("Formatted text version with table layout")
-            
-            # Option 2: Try HTML (works in some clients)
-            mailto_html = f"mailto:?subject={encoded_subject}&body={encoded_html_body}"
-            st.markdown(f"[📧 HTML Email (experimental)]({mailto_html})")
-            st.caption("May work in some email clients")
-            
-            # Option 3: Simple version (fallback)
-            simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}%0D%0A%0D%0APlease see attached detailed breakdown."
-            mailto_simple = f"mailto:?subject={encoded_subject}&body={simple_body}"
-            st.markdown(f"[📧 Simple Email]({mailto_simple})")
-            st.caption("Basic version for maximum compatibility")
-            
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
