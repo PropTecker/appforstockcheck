@@ -301,14 +301,18 @@ def make_bank_key_col(df: pd.DataFrame, banks_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 # Apply quotes policy if present
-if "available_excl_quotes" in backend["Stock"].columns and "quoted" in backend["Stock"].columns:
+if {"available_excl_quotes", "quoted"}.issubset(backend["Stock"].columns):
     s = backend["Stock"].copy()
+    s["available_excl_quotes"] = pd.to_numeric(s["available_excl_quotes"], errors="coerce").fillna(0)
+    s["quoted"] = pd.to_numeric(s["quoted"], errors="coerce").fillna(0)
+
     if quotes_hold_policy == "Ignore quotes (default)":
         s["quantity_available"] = s["available_excl_quotes"]
     elif quotes_hold_policy == "Quotes hold 100%":
-        s["quantity_available"] = (s["available_excl_quotes"] - s["quoted']).clip(lower=0)
+        s["quantity_available"] = (s["available_excl_quotes"] - s["quoted"]).clip(lower=0)
     else:
         s["quantity_available"] = (s["available_excl_quotes"] - 0.5 * s["quoted"]).clip(lower=0)
+
     backend["Stock"] = s
 
 # Enrich Banks geography
