@@ -1586,6 +1586,8 @@ def build_results_map(alloc_df: pd.DataFrame):
 
 # Replace the entire "Map Display (Always Visible)" section with this:
 
+# Replace the entire "Map Display (Always Visible)" section with this:
+
 # ================= Map Display (Always Visible) =================
 with map_container:
     st.markdown("### Map")
@@ -1607,14 +1609,22 @@ with map_container:
             st.caption("📍 Showing UK overview - use 'Locate' to center on your target site")
             fmap_to_show = build_base_map()
         
-        # Always try st_folium first with a simple key
-        map_data = st_folium(
-            fmap_to_show, 
-            height=520, 
-            use_container_width=True,
-            key=f"main_map_{st.session_state.get('map_version', 0)}",
-            returned_data=["last_object_clicked"]
-        )
+        # Try st_folium first (without returned_data parameter)
+        try:
+            map_data = st_folium(
+                fmap_to_show, 
+                height=520, 
+                use_container_width=True,
+                key=f"main_map_{st.session_state.get('map_version', 0)}"
+            )
+        except Exception as st_folium_error:
+            st.warning(f"st_folium failed: {st_folium_error}")
+            # Try folium_static as fallback
+            if folium_static:
+                st.write("**Using static map renderer**")
+                folium_static(fmap_to_show, width=None, height=520)
+            else:
+                raise st_folium_error
         
         # Debug info
         if st.checkbox("Show map debug info", value=False):
@@ -1631,16 +1641,23 @@ with map_container:
         
         # Simple fallback map
         try:
+            st.write("**Creating simple fallback map**")
             simple_map = folium.Map(location=[54.5, -2.5], zoom_start=6)
+            folium.CircleMarker([54.5, -2.5], radius=5, popup="UK Center", color="red").add_to(simple_map)
+            
             if folium_static:
-                st.write("**Fallback Map (Static)**")
+                st.write("**Fallback Map (Static Renderer)**")
                 folium_static(simple_map, width=700, height=400)
             else:
-                st.write("**Fallback Map**")
+                st.write("**Fallback Map (st_folium)**")
                 st_folium(simple_map, height=400, key="fallback_map")
+                
         except Exception as e2:
             st.error(f"Even fallback map failed: {e2}")
-            st.info("Map functionality temporarily unavailable. Please refresh the page.")
+            st.info("Map functionality temporarily unavailable. Please check your streamlit-folium installation.")
+            
+            # Show installation instructions
+            st.code("pip install streamlit-folium", language="bash")
 
 # Debug section (temporary - remove later)
 if st.checkbox("Show detailed debug info", value=False):
