@@ -97,6 +97,11 @@ def require_login():
 
 require_login()
 
+# --- Map version for forcing a fresh render on reruns ---
+if "map_version" not in st.session_state:
+    st.session_state["map_version"] = 0
+
+
 # ================= HTTP helpers =================
 def http_get(url, params=None, headers=None, timeout=25):
     try:
@@ -479,10 +484,11 @@ def find_site(postcode: str, address: str):
 if run_locate:
     try:
         tl, tn = find_site(postcode, address)
-        # one-off success (optional — persistent banner below keeps it visible)
+        st.session_state["map_version"] += 1   # <— force map re-mount after Locate
         st.success(f"Found LPA: **{tl}** | NCA: **{tn}**")
     except Exception as e:
         st.error(f"Location error: {e}")
+
 
 # --- Persistent Locate banner (stays after reruns) ---
 if sstr(st.session_state.get("target_lpa_name")) or sstr(st.session_state.get("target_nca_name")):
@@ -1427,7 +1433,9 @@ if run:
 
         # Save to session for results map
         st.session_state["last_alloc_df"] = alloc_df.copy()
+        st.session_state["map_version"] += 1   # <— force map re-mount after Optimise
 
+        
         # downloads
         st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
                            file_name="allocation.csv", mime="text/csv")
@@ -1556,8 +1564,10 @@ with map_placeholder:
         else:
             fmap_to_show = build_base_map()
 
+        map_key = f"main_map_{st.session_state.get('map_version', 0)}"
+        
         try:
-            st_folium(fmap_to_show, height=520, use_container_width=True, key="main_map")
+            st_folium(fmap_to_show, height=520, use_container_width=True, key=map_key)
         except Exception:
             if folium_static:
                 folium_static(fmap_to_show, width=None, height=520)
