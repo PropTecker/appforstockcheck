@@ -789,7 +789,7 @@ with st.container():
 st.subheader("2) Demand (units required)")
 NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
 
-HAB_CHOICES = sorted(
+HAB_CHOICES = [""] + sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
 )
 
@@ -799,9 +799,10 @@ with st.container(border=True):
     for idx, row in enumerate(st.session_state.demand_rows):
         c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
         with c1:
+            habitat_idx = HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0
             st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
                 "Habitat", HAB_CHOICES,
-                index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                index=habitat_idx,
                 key=f"hab_{row['id']}",
                 help="Start typing to filter",
             )
@@ -821,7 +822,7 @@ with st.container(border=True):
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                {"id": st.session_state._next_row_id, "habitat_name": "", "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
