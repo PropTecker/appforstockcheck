@@ -1684,8 +1684,9 @@ if run:
             f"Grand total: **£{total_with_admin:,.0f}**"
         )
         
-        # ========== MAP UPDATE NOTICE ==========
-        st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
+        # ========== RERUN TO UPDATE MAP ==========
+        st.info("🗺️ Updating map with bank catchment areas...")
+        st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
