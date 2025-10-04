@@ -1124,6 +1124,7 @@ with st.expander("🔎 Diagnostics", expanded=False):
         st.error(f"Diagnostics error: {de}")
 
 # ========= Proximity Audit =========
+# ========= Proximity Audit =========
 with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t chosen)", expanded=False):
     try:
         if demand_df.empty:
@@ -1143,18 +1144,22 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
             if not opts:
                 st.warning("No options to audit.")
             else:
-                o = pd.DataFrame(opts)
+                o = pd.DataFrame(opts).copy()
+                # ✅ make column names consistent with Diagnostics section
+                if "type" in o.columns and "allocation_type" not in o.columns:
+                    o = o.rename(columns={"type": "allocation_type"})
+
                 for dem in dd["habitat_name"].unique():
                     sub = o[o["demand_habitat"] == dem].copy()
                     if sub.empty:
                         st.write(f"**{dem}** — no candidates (check catalog/trading rules).")
                         continue
                     sub["approx_cap"] = sub["stock_use"].apply(lambda d: sum(d.values()) if isinstance(d, dict) else 0.0)
-                    g = sub.groupby(["BANK_KEY","bank_name","proximity","allocation_type"], as_index=False).agg(
-                        min_price=("unit_price","min"),
-                        options=("unit_price","count"),
-                        approx_cap=("approx_cap","sum")
-                    ).sort_values(["proximity","allocation_type","min_price"])
+                    g = (sub.groupby(["BANK_KEY","bank_name","proximity","allocation_type"], as_index=False)
+                           .agg(min_price=("unit_price","min"),
+                                options=("unit_price","count"),
+                                approx_cap=("approx_cap","sum"))
+                           .sort_values(["proximity","allocation_type","min_price"]))
                     st.write(f"**{dem}** — candidates by bank & proximity")
                     st.dataframe(g, use_container_width=True, hide_index=True)
 
@@ -1168,6 +1173,7 @@ with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t cho
 
     except Exception as e:
         st.error(f"Audit error: {e}")
+
 
 # ========= Pricing completeness =========
 with st.expander("💷 Pricing completeness (this contract size)", expanded=False):
