@@ -631,90 +631,41 @@ def build_results_map(alloc_df: pd.DataFrame):
             bgeo = st.session_state["bank_catchment_geo"][cache_key]
             bank_display_name = sstr(bname) or sstr(bkey)
             
-            # Create merged boundary from LPA + NCA
-            merged_geojson = None
+            # Create a unified visual appearance using FeatureGroup
+            bank_feature_group = folium.FeatureGroup(name=f"🏢 {bank_display_name} - Catchment Area")
             
-            try:
-                from shapely.geometry import shape
-                from shapely.ops import unary_union
-                import json as json_lib
-                
-                # Convert GeoJSON to Shapely geometries
-                geometries_to_merge = []
-                
-                if bgeo.get("lpa_gj"):
-                    lpa_shape = shape(bgeo["lpa_gj"])
-                    geometries_to_merge.append(lpa_shape)
-                
-                if bgeo.get("nca_gj"):
-                    nca_shape = shape(bgeo["nca_gj"])
-                    geometries_to_merge.append(nca_shape)
-                
-                # Merge the geometries
-                if geometries_to_merge:
-                    if len(geometries_to_merge) == 1:
-                        merged_shape = geometries_to_merge[0]
-                    else:
-                        merged_shape = unary_union(geometries_to_merge)
-                    
-                    # Convert back to GeoJSON
-                    merged_geojson = merged_shape.__geo_interface__
-                
-            except ImportError:
-                # Fallback: Shapely not available, show both separately but with same style
-                st.caption("⚠️ Shapely not available - showing LPA and NCA separately")
-                merged_geojson = None
-            except Exception as e:
-                st.caption(f"⚠️ Could not merge boundaries for {bank_display_name}: {e}")
-                merged_geojson = None
-            
-            # Add the merged boundary or fallback to separate boundaries
-            if merged_geojson:
-                # Single merged boundary - dotted green
+            # Add LPA with unified styling
+            if bgeo.get("lpa_gj"):
                 folium.GeoJson(
-                    merged_geojson,
-                    name=f"🏢 {bank_display_name} - Catchment Area",
+                    bgeo["lpa_gj"],
                     style_function=lambda x: {
                         "fillColor": "green", 
                         "color": "green",  # Green border
                         "weight": 3, 
-                        "fillOpacity": 0.1,  # Light green fill
+                        "fillOpacity": 0.15,  # Slightly more visible
                         "opacity": 0.9,
                         "dashArray": "5,5"  # Dotted border
                     },
-                    tooltip=f"Bank: {bank_display_name} - Combined LPA/NCA Catchment"
-                ).add_to(fmap)
-            else:
-                # Fallback: Add LPA and NCA separately with same style
-                if bgeo.get("lpa_gj"):
-                    folium.GeoJson(
-                        bgeo["lpa_gj"],
-                        name=f"🏢 {bank_display_name} - LPA",
-                        style_function=lambda x: {
-                            "fillColor": "green", 
-                            "color": "green",
-                            "weight": 3, 
-                            "fillOpacity": 0.1,
-                            "opacity": 0.9,
-                            "dashArray": "5,5"
-                        },
-                        tooltip=f"Bank: {bank_display_name} - LPA: {sstr(bgeo.get('lpa_name', 'Unknown'))}"
-                    ).add_to(fmap)
-                
-                if bgeo.get("nca_gj"):
-                    folium.GeoJson(
-                        bgeo["nca_gj"],
-                        name=f"🌿 {bank_display_name} - NCA",
-                        style_function=lambda x: {
-                            "fillColor": "green", 
-                            "color": "green",
-                            "weight": 3, 
-                            "fillOpacity": 0.05,  # Lighter for NCA
-                            "opacity": 0.9,
-                            "dashArray": "5,5"
-                        },
-                        tooltip=f"Bank: {bank_display_name} - NCA: {sstr(bgeo.get('nca_name', 'Unknown'))}"
-                    ).add_to(fmap)
+                    tooltip=f"🏢 {bank_display_name} - LPA: {sstr(bgeo.get('lpa_name', 'Unknown'))}"
+                ).add_to(bank_feature_group)
+            
+            # Add NCA with same styling to create visual unity
+            if bgeo.get("nca_gj"):
+                folium.GeoJson(
+                    bgeo["nca_gj"],
+                    style_function=lambda x: {
+                        "fillColor": "green", 
+                        "color": "green",  # Same green border
+                        "weight": 3, 
+                        "fillOpacity": 0.08,  # Lighter fill for NCA to show layering
+                        "opacity": 0.9,
+                        "dashArray": "5,5"  # Same dotted border
+                    },
+                    tooltip=f"🏢 {bank_display_name} - NCA: {sstr(bgeo.get('nca_name', 'Unknown'))}"
+                ).add_to(bank_feature_group)
+            
+            # Add the unified feature group to the map
+            bank_feature_group.add_to(fmap)
 
             # Create detailed popup for bank marker
             habitat_details = []
@@ -724,36 +675,37 @@ def build_results_map(alloc_df: pd.DataFrame):
                 )
             
             popup_html = f"""
-            <div style="font-family: Arial; font-size: 12px; width: 300px;">
+            <div style="font-family: Arial; font-size: 12px; width: 320px;">
                 <h4 style="margin: 0 0 10px 0; color: green;">🏢 {bank_display_name}</h4>
                 <p><strong>📍 LPA:</strong> {sstr(bgeo.get('lpa_name', 'Unknown'))}</p>
                 <p><strong>🌿 NCA:</strong> {sstr(bgeo.get('nca_name', 'Unknown'))}</p>
                 <p><strong>📊 Total Units:</strong> {g['units_supplied'].sum():.2f}</p>
                 <p><strong>💰 Total Cost:</strong> £{g['cost'].sum():,.0f}</p>
-                <p><strong>🌱 Habitats:</strong></p>
-                <ul style="margin: 5px 0; padding-left: 15px;">
+                <p><strong>🚩 Proximity:</strong> {g['tier'].iloc[0].title()}</p>
+                <p><strong>🌱 Habitats Supplied:</strong></p>
+                <ul style="margin: 5px 0; padding-left: 15px; font-size: 11px;">
                     {''.join([f'<li>{detail}</li>' for detail in habitat_details])}
                 </ul>
             </div>
             """
             
-            # Add bank marker
+            # Add bank marker with enhanced styling
             folium.Marker(
                 [lat_b, lon_b],
                 icon=folium.Icon(color="green", icon="building", prefix="fa"),
-                popup=folium.Popup(popup_html, max_width=350),
+                popup=folium.Popup(popup_html, max_width=380),
                 tooltip=f"🏢 {bank_display_name} - Click for details"
             ).add_to(fmap)
 
-            # Add supply route
+            # Add supply route with enhanced styling
             if lat0 is not None and lon0 is not None:
                 folium.PolyLine(
                     locations=[[lat0, lon0], [lat_b, lon_b]],
-                    weight=3, 
-                    opacity=0.7, 
-                    color="green",
-                    dash_array="8,4",
-                    tooltip=f"Supply route: Target → {bank_display_name}"
+                    weight=4, 
+                    opacity=0.8, 
+                    color="darkgreen",  # Darker green for contrast
+                    dash_array="10,5",
+                    tooltip=f"🚚 Supply route: Target → {bank_display_name}"
                 ).add_to(fmap)
 
         except Exception as e:
