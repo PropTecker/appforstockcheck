@@ -845,6 +845,10 @@ def prepare_options(demand_df: pd.DataFrame,
                             sstr(s2.get("lpa_name")), sstr(s2.get("nca_name")),
                             target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
                         )
+                        # ✅ Only allow paired on FAR
+                        if tier_b != "far":
+                            continue
+                        
                         pi_o = find_price_for_supply(bk, ORCHARD_NAME, tier_b, d_broader, d_dist)
                         pi_s = find_price_for_supply(bk, s2["habitat_name"], tier_b, d_broader, d_dist)
                         if not pi_o or not pi_s:
