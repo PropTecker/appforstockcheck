@@ -501,7 +501,7 @@ def find_site(postcode: str, address: str):
     lpa_nei_norm = [norm_name(n) for n in lpa_nei]
     nca_nei_norm = [norm_name(n) for n in nca_nei]
     
-    # Update session state
+    # Update session state - FIXED VERSION
     st.session_state["target_lpa_name"] = t_lpa
     st.session_state["target_nca_name"] = t_nca
     st.session_state["lpa_neighbors"] = lpa_nei
@@ -512,8 +512,10 @@ def find_site(postcode: str, address: str):
     st.session_state["target_lon"] = lon
     st.session_state["lpa_geojson"] = lpa_gj
     st.session_state["nca_geojson"] = nca_gj
-    st.session_state["last_alloc_df"] = alloc_df.copy()
-    st.session_state["optimization_complete"] = True
+    # Clear any previous optimization results when locating new site
+    if "last_alloc_df" in st.session_state:
+        st.session_state["last_alloc_df"] = None
+    st.session_state["optimization_complete"] = False
         
     return t_lpa, t_nca
 
@@ -521,7 +523,7 @@ if run_locate:
     try:
         tl, tn = find_site(postcode, address)
         st.success(f"Found LPA: **{tl}** | NCA: **{tn}**")
-        st.rerun()  # Force refresh to update map
+        st.rerun()
     except Exception as e:
         st.error(f"Location error: {e}")
 
@@ -532,8 +534,154 @@ if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         f"NCA: **{st.session_state['target_nca_name'] or '—'}**"
     )
 
+# ================= Map functions =================
+def build_base_map():
+    lat = st.session_state.get("target_lat", None)
+    lon = st.session_state.get("target_lon", None)
+    lpa_gj = st.session_state.get("lpa_geojson", None)
+    nca_gj = st.session_state.get("nca_geojson", None)
+    t_lpa = st.session_state.get("target_lpa_name", "")
+    t_nca = st.session_state.get("target_nca_name", "")
+
+    if lat is None or lon is None:
+        fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
+    else:
+        fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
+        add_geojson_layer(fmap, lpa_gj, f"LPA: {t_lpa}" if t_lpa else "LPA", color="red", weight=2, fill_opacity=0.05)
+        add_geojson_layer(fmap, nca_gj, f"NCA: {t_nca}" if t_nca else "NCA", color="yellow", weight=3, fill_opacity=0.05)
+        try:
+            folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
+        except Exception:
+            pass
+    folium.LayerControl(collapsed=True).add_to(fmap)
+    return fmap
+
+def build_results_map(alloc_df: pd.DataFrame):
+    fmap = build_base_map()
+    lat0 = st.session_state.get("target_lat", None)
+    lon0 = st.session_state.get("target_lon", None)
+
+    # Bank coordinates via Banks (geocode if needed)
+    bank_coords: Dict[str, Tuple[float,float]] = {}
+    banks_df = backend["Banks"].copy()
+    for _, b in banks_df.iterrows():
+        bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
+        loc = bank_row_to_latlon(b)
+        if loc:
+            bank_coords[bkey] = (loc[0], loc[1])
+
+    if not alloc_df.empty:
+        grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
+        for (bkey, bname), g in grouped:
+            try:
+                latlon = bank_coords.get(sstr(bkey))
+                if not latlon:
+                    continue
+                lat_b, lon_b = latlon
+
+                # Catchments (cached)
+                cache_key = sstr(bkey)
+                if cache_key not in st.session_state["bank_catchment_geo"]:
+                    try:
+                        b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                        st.session_state["bank_catchment_geo"][cache_key] = {
+                            "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                            "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                        }
+                    except Exception:
+                        st.session_state["bank_catchment_geo"][cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+
+                bgeo = st.session_state["bank_catchment_geo"][cache_key]
+                add_geojson_layer(
+                    fmap, bgeo.get("lpa_gj"),
+                    name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                    color="green", weight=2, fill_opacity=MAP_CATCHMENT_ALPHA
+                )
+                add_geojson_layer(
+                    fmap, bgeo.get("nca_gj"),
+                    name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                    color="blue", weight=3, fill_opacity=MAP_CATCHMENT_ALPHA
+                )
+
+                # Marker & popup
+                try:
+                    folium.Marker(
+                        [lat_b, lon_b],
+                        icon=folium.Icon(color="green", icon="leaf"),
+                        popup=folium.Popup("<br>".join([
+                            f"<b>Site (BANK_KEY):</b> {sstr(bname) or sstr(bkey)}",
+                            f"<b>Total units:</b> {g['units_supplied'].sum():.3f}",
+                            f"<b>Total cost:</b> £{g['cost'].sum():,.0f}",
+                            "<b>Breakdown:</b>",
+                            *[
+                                f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})"
+                                for _, r in g.sort_values('units_supplied', ascending=False).head(6).iterrows()
+                            ]
+                        ]), max_width=420)
+                    ).add_to(fmap)
+                except Exception:
+                    pass
+
+                # Route line only if target coords exist
+                if (lat0 is not None) and (lon0 is not None):
+                    try:
+                        folium.PolyLine(
+                            locations=[[lat0, lon0], [lat_b, lon_b]],
+                            weight=2, opacity=0.8, dash_array="6,6", color="blue",
+                            tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
+                        ).add_to(fmap)
+                    except Exception:
+                        pass
+            except Exception as map_e:
+                st.caption(f"Skipped map overlay for BANK_KEY {sstr(bname) or sstr(bkey)}: {map_e}")
+
+    return fmap
+
 # ================= Map Container (Always Visible) =================
-map_container = st.container()
+with st.container():
+    st.markdown("### Map")
+    
+    try:
+        # Determine what map to show
+        has_location = st.session_state.get("target_lat") is not None and st.session_state.get("target_lon") is not None
+        has_results = (isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
+                      not st.session_state.get("last_alloc_df").empty and 
+                      st.session_state.get("optimization_complete", False))
+        
+        # Build the appropriate map
+        if has_results:
+            st.caption("📍 Showing optimization results with bank locations and supply routes")
+            try:
+                current_map = build_results_map(st.session_state["last_alloc_df"])
+            except Exception as e:
+                st.warning(f"Failed to build results map: {e}, falling back to base map")
+                current_map = build_base_map()
+        elif has_location:
+            st.caption("📍 Showing target location with LPA/NCA boundaries")
+            current_map = build_base_map()
+        else:
+            st.caption("📍 Showing UK overview - use 'Locate' to center on your target site")
+            current_map = build_base_map()
+        
+        # Use a unique key that forces refresh when needed
+        map_key = f"main_map_{has_location}_{has_results}_{st.session_state.get('target_lat', 'no_lat')}"
+        
+        # Render the map
+        st_folium(
+            current_map, 
+            height=520, 
+            use_container_width=True,
+            key=map_key
+        )
+
+    except Exception as e:
+        st.error(f"Map error: {e}")
+        # Simple fallback
+        try:
+            fallback_map = folium.Map(location=[54.5, -2.5], zoom_start=6)
+            st_folium(fallback_map, height=400, key="fallback")
+        except:
+            st.info("Map temporarily unavailable")
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
@@ -933,7 +1081,8 @@ def optimise(demand_df: pd.DataFrame,
             # tiny tie-break towards higher-capacity banks
             bank_capacity_total: Dict[str, float] = {b: 0.0 for b in bank_keys}
             for sid, cap in stock_caps.items():
-                bkey = stock_bankkey.get(sid, "")
+                bkey = stock_bank
+            key.get(sid, "")
                 if bkey in bank_capacity_total:
                     bank_capacity_total[bkey] += float(cap or 0.0)
 
@@ -1481,193 +1630,7 @@ if run:
     except Exception as e:
         st.error(f"Optimiser error: {e}")
 
-# ================= Always-on map render (in fixed container) =================
-def build_base_map():
-    lat = st.session_state.get("target_lat", None)
-    lon = st.session_state.get("target_lon", None)
-    lpa_gj = st.session_state.get("lpa_geojson", None)
-    nca_gj = st.session_state.get("nca_geojson", None)
-    t_lpa = st.session_state.get("target_lpa_name", "")
-    t_nca = st.session_state.get("target_nca_name", "")
-
-    if lat is None or lon is None:
-        fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
-    else:
-        fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
-        add_geojson_layer(fmap, lpa_gj, f"LPA: {t_lpa}" if t_lpa else "LPA", color="red", weight=2, fill_opacity=0.05)
-        add_geojson_layer(fmap, nca_gj, f"NCA: {t_nca}" if t_nca else "NCA", color="yellow", weight=3, fill_opacity=0.05)
-        try:
-            folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
-        except Exception:
-            pass
-    folium.LayerControl(collapsed=True).add_to(fmap)
-    return fmap
-
-def build_results_map(alloc_df: pd.DataFrame):
-    fmap = build_base_map()
-    lat0 = st.session_state.get("target_lat", None)
-    lon0 = st.session_state.get("target_lon", None)
-
-    # Bank coordinates via Banks (geocode if needed)
-    bank_coords: Dict[str, Tuple[float,float]] = {}
-    banks_df = backend["Banks"].copy()
-    for _, b in banks_df.iterrows():
-        bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
-        loc = bank_row_to_latlon(b)
-        if loc:
-            bank_coords[bkey] = (loc[0], loc[1])
-
-    if not alloc_df.empty:
-        grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
-        for (bkey, bname), g in grouped:
-            try:
-                latlon = bank_coords.get(sstr(bkey))
-                if not latlon:
-                    continue
-                lat_b, lon_b = latlon
-
-                # Catchments (cached)
-                cache_key = sstr(bkey)
-                if cache_key not in st.session_state["bank_catchment_geo"]:
-                    try:
-                        b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                        st.session_state["bank_catchment_geo"][cache_key] = {
-                            "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                            "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                        }
-                    except Exception:
-                        st.session_state["bank_catchment_geo"][cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
-
-                bgeo = st.session_state["bank_catchment_geo"][cache_key]
-                add_geojson_layer(
-                    fmap, bgeo.get("lpa_gj"),
-                    name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
-                    color="green", weight=2, fill_opacity=MAP_CATCHMENT_ALPHA
-                )
-                add_geojson_layer(
-                    fmap, bgeo.get("nca_gj"),
-                    name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
-                    color="blue", weight=3, fill_opacity=MAP_CATCHMENT_ALPHA
-                )
-
-                # Marker & popup
-                try:
-                    folium.Marker(
-                        [lat_b, lon_b],
-                        icon=folium.Icon(color="green", icon="leaf"),
-                        popup=folium.Popup("<br>".join([
-                            f"<b>Site (BANK_KEY):</b> {sstr(bname) or sstr(bkey)}",
-                            f"<b>Total units:</b> {g['units_supplied'].sum():.3f}",
-                            f"<b>Total cost:</b> £{g['cost'].sum():,.0f}",
-                            "<b>Breakdown:</b>",
-                            *[
-                                f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})"
-                                for _, r in g.sort_values('units_supplied', ascending=False).head(6).iterrows()
-                            ]
-                        ]), max_width=420)
-                    ).add_to(fmap)
-                except Exception:
-                    pass
-
-                # Route line only if target coords exist
-                if (lat0 is not None) and (lon0 is not None):
-                    try:
-                        folium.PolyLine(
-                            locations=[[lat0, lon0], [lat_b, lon_b]],
-                            weight=2, opacity=0.8, dash_array="6,6", color="blue",
-                            tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
-                        ).add_to(fmap)
-                    except Exception:
-                        pass
-            except Exception as map_e:
-                st.caption(f"Skipped map overlay for BANK_KEY {sstr(bname) or sstr(bkey)}: {map_e}")
-
-    return fmap
-
-# Replace the entire "Map Display (Always Visible)" section with this:
-
-# ================= Map Display (Always Visible) =================
-with map_container:
-    st.markdown("### Map")
-    
-    try:
-        # Determine what map to show
-        has_location = st.session_state.get("target_lat") is not None and st.session_state.get("target_lon") is not None
-        has_results = (isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
-                      not st.session_state.get("last_alloc_df").empty and 
-                      st.session_state.get("optimization_complete", False))
-        
-        # Build the appropriate map
-        if has_results:
-            st.caption("📍 Showing optimization results with bank locations and supply routes")
-            try:
-                current_map = build_results_map(st.session_state["last_alloc_df"])
-                map_type = "results"
-            except Exception as e:
-                st.warning(f"Failed to build results map: {e}, falling back to base map")
-                current_map = build_base_map()
-                map_type = "base_fallback"
-        elif has_location:
-            st.caption("📍 Showing target location with LPA/NCA boundaries")
-            current_map = build_base_map()
-            map_type = "base"
-        else:
-            st.caption("📍 Showing UK overview - use 'Locate' to center on your target site")
-            current_map = build_base_map()
-            map_type = "overview"
-        
-        # Use a simple, stable key that doesn't change too often
-        stable_key = f"bng_map_{map_type}"
-        
-        # Always render the map with error handling
-        map_rendered = False
-        
-        # Try st_folium first
-        try:
-            st_folium(
-                current_map, 
-                height=520, 
-                use_container_width=True,
-                key=stable_key,
-                width=None
-            )
-            map_rendered = True
-        except Exception as st_folium_error:
-            st.warning(f"st_folium failed: {st_folium_error}")
-            
-            # Try folium_static as backup
-            if folium_static:
-                try:
-                    st.write("**Using static map renderer**")
-                    folium_static(current_map, width=None, height=520)
-                    map_rendered = True
-                except Exception as static_error:
-                    st.error(f"folium_static also failed: {static_error}")
-        
-        # If neither worked, show a very basic map
-        if not map_rendered:
-            st.error("Map rendering failed, showing basic fallback")
-            try:
-                basic_map = folium.Map(
-                    location=[51.5, -0.1] if not has_location else [st.session_state["target_lat"], st.session_state["target_lon"]], 
-                    zoom_start=8
-                )
-                if has_location:
-                    folium.Marker(
-                        [st.session_state["target_lat"], st.session_state["target_lon"]], 
-                        popup="Target Site"
-                    ).add_to(basic_map)
-                
-                st_folium(basic_map, height=400, key="emergency_map")
-            except Exception as emergency_error:
-                st.error(f"Even emergency map failed: {emergency_error}")
-                st.info("Please refresh the page to restore map functionality.")
-
-    except Exception as outer_error:
-        st.error(f"Complete map failure: {outer_error}")
-        st.info("Map temporarily unavailable")
-
-# Debug section (temporary - remove later)
+# Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
     st.write("**Session State Map-Related:**")
@@ -1690,21 +1653,6 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
