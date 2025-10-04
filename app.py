@@ -1135,6 +1135,113 @@ with st.expander("🔎 Diagnostics", expanded=False):
     except Exception as de:
         st.error(f"Diagnostics error: {de}")
 
+# ========= Price readout (what the optimiser sees) =========
+def _build_pricing_enriched_for_size(chosen_size: str) -> pd.DataFrame:
+    # Mirrors the logic used in prepare_options() so the tables match the optimiser.
+    Pricing = backend["Pricing"].copy()
+    Catalog = backend["HabitatCatalog"].copy()
+    Banks   = backend["Banks"].copy()
+
+    # Pricing already normalised + hedgerow removed by normalise_pricing()
+    pr = Pricing[Pricing["contract_size"] == chosen_size].copy()
+    # Carry bank_name (nice for display)
+    if "bank_name" not in pr.columns and "bank_id" in pr.columns and "bank_name" in Banks.columns:
+        pr = pr.merge(Banks[["bank_id","bank_name"]].drop_duplicates(), on="bank_id", how="left")
+
+    # Enrich with effective broader/distinctiveness
+    pc_join = pr.merge(
+        Catalog[["habitat_name", "broader_type", "distinctiveness_name"]],
+        on="habitat_name", how="left", suffixes=("", "_cat")
+    )
+    pc_join["broader_type_eff"] = pc_join["broader_type"].where(
+        pc_join["broader_type"].astype(str).str.len() > 0, pc_join["broader_type_cat"]
+    )
+    pc_join["distinctiveness_name_eff"] = pc_join["distinctiveness_name"].where(
+        pc_join["distinctiveness_name"].astype(str).str.len() > 0, pc_join["distinctiveness_name_cat"]
+    )
+    for c in ["broader_type_eff","distinctiveness_name_eff","tier","bank_id","habitat_name","BANK_KEY","bank_name"]:
+        if c in pc_join.columns:
+            pc_join[c] = pc_join[c].astype(str).str.strip()
+
+    # Columns we’ll show
+    cols = [
+        "BANK_KEY", "bank_name", "bank_id", "contract_size", "tier",
+        "habitat_name", "price", "broader_type_eff", "distinctiveness_name_eff"
+    ]
+    for c in cols:
+        if c not in pc_join.columns:
+            pc_join[c] = ""
+    # Final order & types
+    pc_join["price"] = pd.to_numeric(pc_join["price"], errors="coerce")
+    pc_join = pc_join[cols].sort_values(["BANK_KEY","tier","habitat_name","price"], kind="stable")
+    return pc_join
+
+with st.expander("🧾 Price readout (normalised view the optimiser uses)", expanded=False):
+    try:
+        if demand_df.empty:
+            st.info("Add some demand rows so we can highlight only the relevant habitats.")
+        present_sizes = backend["Pricing"]["contract_size"].drop_duplicates().tolist()
+        total_units = float(demand_df["units_required"].sum()) if not demand_df.empty else 0.0
+        chosen_size = select_contract_size(total_units, present_sizes)
+
+        st.write(f"**Chosen contract size:** `{chosen_size}` (present sizes: {present_sizes})")
+
+        prn = _build_pricing_enriched_for_size(chosen_size)
+
+        if prn.empty:
+            st.error("No pricing rows found for the chosen contract size.")
+        else:
+            st.markdown("**Full normalised price table (this size)**")
+            st.dataframe(prn, use_container_width=True, hide_index=True)
+
+            st.markdown("**Summary by bank & tier**")
+            summ = (prn.groupby(["BANK_KEY","bank_name","tier"], as_index=False)
+                        .agg(rows=("price","count"),
+                             min_price=("price","min"),
+                             p25=("price", lambda s: s.quantile(0.25)),
+                             median=("price","median"),
+                             p75=("price", lambda s: s.quantile(0.75)),
+                             max_price=("price","max"))
+                        .sort_values(["tier","min_price","BANK_KEY"]))
+            st.dataframe(summ, use_container_width=True, hide_index=True)
+
+            if not demand_df.empty:
+                want = sorted(set(demand_df["habitat_name"]) - {"Net Gain (Low-equivalent)"})
+                if want:
+                    st.markdown("**Only demanded habitats (exact names)**")
+                    prn_dem = prn[prn["habitat_name"].isin(want)].copy()
+                    if prn_dem.empty:
+                        st.warning("No exact price rows for the demanded habitat names at this size.")
+                    else:
+                        st.dataframe(prn_dem.sort_values(["habitat_name","tier","price"]),
+                                     use_container_width=True, hide_index=True)
+
+            # Quick scrub check (typical cheapest for Low)
+            try:
+                mask_scrub = prn["habitat_name"].str.contains("scrub", case=False, na=False) | \
+                             prn["habitat_name"].str.contains("bramble", case=False, na=False)
+                prn_scrub = prn[mask_scrub]
+                if not prn_scrub.empty:
+                    st.markdown("**Scrub pricing quick check (common Low choice)**")
+                    st.dataframe(
+                        prn_scrub.sort_values(["tier","price","BANK_KEY","habitat_name"]),
+                        use_container_width=True, hide_index=True
+                    )
+            except Exception:
+                pass
+
+            # Download
+            csv_bytes = prn.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download pricing (normalised, this size) CSV",
+                data=csv_bytes,
+                file_name=f"pricing_normalised_{chosen_size}.csv",
+                mime="text/csv"
+            )
+    except Exception as e:
+        st.error(f"Price readout error: {e}")
+
+
 # ========= Proximity Audit =========
 # ========= Proximity Audit =========
 with st.expander("🧭 Proximity audit (why a local/adjacent option wasn’t chosen)", expanded=False):
