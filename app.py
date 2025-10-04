@@ -2051,6 +2051,99 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     
     return report_df, email_body
 
+# Add this section right before the email generation section (around line 1950)
+
+# ================= Client Report Form =================
+# Initialize email inputs in session state (only if not exists)
+if "email_client_name" not in st.session_state:
+    st.session_state.email_client_name = "INSERT NAME"
+if "email_ref_number" not in st.session_state:
+    st.session_state.email_ref_number = "BNG00XXX"
+if "email_location" not in st.session_state:
+    st.session_state.email_location = "INSERT LOCATION"
+
+# Email generation section - ONLY runs if optimization is complete
+if (st.session_state.get("optimization_complete", False) and 
+    isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
+    not st.session_state["last_alloc_df"].empty):
+    
+    st.markdown("---")
+    st.markdown("#### 📧 Client Report Generation")
+    
+    with st.expander("Generate Client Email Report", expanded=True):
+        st.markdown("**Generate a client-facing report table and email:**")
+        
+        # ========== FORM WITH PERSISTENCE ==========
+        with st.form("client_email_form", clear_on_submit=False):
+            st.markdown("**📝 Email Details:**")
+            col_input1, col_input2, col_input3 = st.columns([1, 1, 1])
+            
+            with col_input1:
+                form_client_name = st.text_input(
+                    "Client Name", 
+                    value=st.session_state.email_client_name,
+                    key="form_client_name"
+                )
+            
+            with col_input2:
+                form_ref_number = st.text_input(
+                    "Reference Number", 
+                    value=st.session_state.email_ref_number,
+                    key="form_ref_number"
+                )
+            
+            with col_input3:
+                form_location = st.text_input(
+                    "Development Location", 
+                    value=st.session_state.email_location,
+                    key="form_location"
+                )
+            
+            # Form submit button
+            form_submitted = st.form_submit_button("Update Email Details")
+        
+        # Handle form submission OUTSIDE the form but INSIDE the expander
+        if form_submitted:
+            st.session_state.email_client_name = form_client_name
+            st.session_state.email_ref_number = form_ref_number
+            st.session_state.email_location = form_location
+            st.success("Email details updated!")
+        
+        # Use the current values from session state
+        client_name = st.session_state.email_client_name
+        ref_number = st.session_state.email_ref_number
+        location = st.session_state.email_location
+        session_alloc_df = st.session_state["last_alloc_df"]
+        session_demand_df = pd.DataFrame(
+            [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
+             for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
+        )
+        session_total_cost = session_alloc_df["cost"].sum()
+        
+        # Generate the report
+        client_table, email_html = generate_client_report_table_fixed(
+            session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
+            client_name, ref_number, location
+        )
+        
+        # Display the table
+        st.markdown("**Client Report Table:**")
+        
+        # Format for display (clean up column names)
+        if not client_table.empty:
+            display_table = client_table.copy()
+            display_table = display_table.rename(columns={
+                "Distinctiveness_Supply": "Supply Distinctiveness",
+                "# Units_Supply": "Supply Units"
+            })
+            
+            # Remove empty development impact columns for display
+            cols_to_show = ["Distinctiveness", "Habitats Lost", "# Units", 
+                           "Supply Distinctiveness", "Habitats Supplied", "Supply Units", 
+                           "Price Per Unit", "Offset Cost"]
+            
+            st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
+
 # Email generation section - ONLY runs if optimization is complete
 if (st.session_state.get("optimization_complete", False) and 
     isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
