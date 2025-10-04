@@ -2061,6 +2061,7 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
 
 
 # Add this to your optimization results section (after the downloads):
+# Add this to your optimization results section (after the downloads):
 if (st.session_state.get("optimization_complete", False) and 
     isinstance(st.session_state.get("last_alloc_df"), pd.DataFrame) and 
     not st.session_state["last_alloc_df"].empty):
@@ -2088,7 +2089,6 @@ if (st.session_state.get("optimization_complete", False) and
             session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP
         )
         
-        # Rest of your existing email generation code...
         # Display the table
         st.markdown("**Client Report Table:**")
         
@@ -2113,7 +2113,7 @@ if (st.session_state.get("optimization_complete", False) and
         col1, col2 = st.columns([1, 1])
         
         with col1:
-            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard"):
+            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
                 st.code(email_html, language="html")
                 st.success("Email HTML generated! Copy the code above and paste into your email client.")
         
@@ -2142,7 +2142,8 @@ if (st.session_state.get("optimization_complete", False) and
                     "Download Client Table (CSV)",
                     data=csv_data,
                     file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key="download_client_table_csv"  # Added unique key
                 )
         
         with col4:
@@ -2150,46 +2151,8 @@ if (st.session_state.get("optimization_complete", False) and
                 "Download Email HTML",
                 data=email_html,
                 file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
-                mime="text/html"
-            )
-            
-            # Create simplified email body for mailto (HTML doesn't work well in mailto)
-            simple_table = "BIODIVERSITY NET GAIN OFFSET PROPOSAL\n\n"
-            for _, row in client_table[:-1].iterrows():
-                if row["Habitats Supplied"] == "Planning Discharge Pack":
-                    simple_table += f"Planning Discharge Pack: {row['Offset Cost']}\n"
-                else:
-                    simple_table += f"{row['Distinctiveness']} {row['Habitats Lost']} ({row['# Units']} units) -> {row['Distinctiveness_Supply']} {row['Habitats Supplied']} ({row['# Units_Supply']} units) @ {row['Price Per Unit']} = {row['Offset Cost']}\n"
-            
-            total_row = client_table.iloc[-1]
-            simple_table += f"\nTOTAL: {total_row['# Units']} units required -> {total_row['# Units_Supply']} units supplied = {total_row['Offset Cost']}"
-            
-            mailto_link = f"mailto:?subject={subject}&body={simple_table}"
-            
-            st.markdown(f"[📧 Open Email Client]({mailto_link})")
-        
-        # Download options
-        st.markdown("**📥 Download Options:**")
-        
-        col3, col4 = st.columns([1, 1])
-        
-        with col3:
-            # Download as CSV
-            csv_data = display_table[cols_to_show].to_csv(index=False)
-            st.download_button(
-                "Download Client Table (CSV)",
-                data=csv_data,
-                file_name=f"client_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv"
-            )
-        
-        with col4:
-            # Download email HTML
-            st.download_button(
-                "Download Email HTML",
-                data=email_html,
-                file_name=f"client_email_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.html",
-                mime="text/html"
+                mime="text/html",
+                key="download_email_html"  # Added unique key
             )
         
 # Debug section (temporary - can remove later)
