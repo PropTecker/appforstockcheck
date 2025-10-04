@@ -694,56 +694,56 @@ def prepare_options(demand_df: pd.DataFrame,
         return dist_levels_map.get(key, dist_levels_map.get(key.lower(), -1e9))
 
     def find_price_for_supply(bank_key: str,
-                          supply_habitat: str,
-                          tier: str,
-                          demand_broader: str,
-                          demand_dist: str) -> Optional[Tuple[float, str, str]]:
-    # 0) Exact habitat price row (BANK_KEY + tier + size)
-    pr_exact = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
-                                (pricing_enriched["tier"] == tier) &
-                                (pricing_enriched["habitat_name"] == supply_habitat)]
-    if not pr_exact.empty:
-        r = pr_exact.sort_values("price").iloc[0]
-        return float(r["price"]), "exact", sstr(r["habitat_name"])
-
-    d_key = sstr(demand_dist).lower()
-    d_num = dval(demand_dist)
-
-    # All rows at this BANK_KEY + tier + size that have effective group & distinctiveness
-    grp = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
-                           (pricing_enriched["tier"] == tier)]
-    grp = grp[(grp["broader_type_eff"].astype(str).str.len() > 0) &
-              (grp["distinctiveness_name_eff"].astype(str).str.len() > 0)]
-    if grp.empty:
-        return None
-
-    if d_key == "low":
-        # 🚫 Do NOT price Low from "cheapest any habitat" (this distorts costs).
-        # If there is no exact price for the *actual* supply habitat at this tier/size,
-        # we treat it as not priceable for Low.
-        return None
-
-    if d_key == "medium":
-        # Preferred: same group with distinctiveness >= Medium
-        grp_same = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
-        if not grp_same.empty:
-            grp_same["_dval"] = grp_same["distinctiveness_name_eff"].map(dval)
-            grp_same = grp_same[grp_same["_dval"] >= d_num]
+                              supply_habitat: str,
+                              tier: str,
+                              demand_broader: str,
+                              demand_dist: str) -> Optional[Tuple[float, str, str]]:
+        # 0) Exact habitat price row (BANK_KEY + tier + size)
+        pr_exact = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
+                                    (pricing_enriched["tier"] == tier) &
+                                    (pricing_enriched["habitat_name"] == supply_habitat)]
+        if not pr_exact.empty:
+            r = pr_exact.sort_values("price").iloc[0]
+            return float(r["price"]), "exact", sstr(r["habitat_name"])
+    
+        d_key = sstr(demand_dist).lower()
+        d_num = dval(demand_dist)
+    
+        # All rows at this BANK_KEY + tier + size that have effective group & distinctiveness
+        grp = pricing_enriched[(pricing_enriched["BANK_KEY"] == bank_key) &
+                               (pricing_enriched["tier"] == tier)]
+        grp = grp[(grp["broader_type_eff"].astype(str).str.len() > 0) &
+                  (grp["distinctiveness_name_eff"].astype(str).str.len() > 0)]
+        if grp.empty:
+            return None
+    
+        if d_key == "low":
+            # 🚫 Do NOT price Low from "cheapest any habitat" (this distorts costs).
+            # If there is no exact price for the *actual* supply habitat at this tier/size,
+            # we treat it as not priceable for Low.
+            return None
+    
+        if d_key == "medium":
+            # Preferred: same group with distinctiveness >= Medium
+            grp_same = grp[grp["broader_type_eff"].map(sstr) == sstr(demand_broader)].copy()
             if not grp_same.empty:
-                r = grp_same.sort_values("price").iloc[0]
+                grp_same["_dval"] = grp_same["distinctiveness_name_eff"].map(dval)
+                grp_same = grp_same[grp_same["_dval"] >= d_num]
+                if not grp_same.empty:
+                    r = grp_same.sort_values("price").iloc[0]
+                    return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
+    
+            # Else: ANY group with distinctiveness strictly higher than Medium
+            grp_any_higher = grp.assign(_dval=grp["distinctiveness_name_eff"].map(dval))
+            grp_any_higher = grp_any_higher[grp_any_higher["_dval"] > d_num]
+            if not grp_any_higher.empty:
+                r = grp_any_higher.sort_values("price").iloc[0]
                 return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
-
-        # Else: ANY group with distinctiveness strictly higher than Medium
-        grp_any_higher = grp.assign(_dval=grp["distinctiveness_name_eff"].map(dval))
-        grp_any_higher = grp_any_higher[grp_any_higher["_dval"] > d_num]
-        if not grp_any_higher.empty:
-            r = grp_any_higher.sort_values("price").iloc[0]
-            return float(r["price"]), "group-proxy", sstr(r["habitat_name"])
-
-        return None  # no compliant proxy
-
-    # High / Very High → like-for-like only (we already tried exact)
-    return None
+    
+            return None  # no compliant proxy
+    
+        # High / Very High → like-for-like only (we already tried exact)
+        return None
 
 
     # Build options
