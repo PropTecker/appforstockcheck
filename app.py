@@ -2165,7 +2165,7 @@ with col2:
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     
-    subject = f"BNG Quote {ref_number} - {location}"
+    subject = f"RE: BNG Units for site at {location} - {ref_number}"
     total_with_admin = session_total_cost + ADMIN_FEE_GBP
     
     # Create email message
