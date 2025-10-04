@@ -1,9 +1,10 @@
-# app.py — BNG Optimiser (Standalone), v9.11
-# Changes in v9.11:
-# - Persistent LPA/NCA banner: stays visible after "Locate" and on reruns.
-# - Always-on map: render inside a fixed placeholder every rerun (no flicker/disappear).
-# - Orchard+Scrub split: each half uses its own original unit price (no 50/50 cost fudge).
-# - Keeps all features from earlier versions.
+# app.py — BNG Optimiser (Standalone), v9.12
+# Changes in v9.12:
+# - Fixed map disappearing on optimise
+# - Improved UI responsiveness
+# - Better state management
+# - Fixed flickering issues
+# - Enhanced error handling
 
 import json
 import re
@@ -18,16 +19,16 @@ import requests
 import streamlit as st
 from streamlit_folium import st_folium
 try:
-    from streamlit_folium import folium_static  # fallback renderer
+    from streamlit_folium import folium_static
 except Exception:
     folium_static = None
 import folium
 
 # ================= Config / constants =================
 ADMIN_FEE_GBP = 500.0
-SINGLE_BANK_SOFT_PCT = 0.01  # +1% soft preference for single site
+SINGLE_BANK_SOFT_PCT = 0.01
 MAP_CATCHMENT_ALPHA = 0.03
-UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}  # set a real contact email
+UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}
 
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
@@ -43,9 +44,39 @@ try:
 except Exception:
     _HAS_PULP = False
 
-# ================= Page =================
+# ================= Page Setup =================
 st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
 st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
+
+# ================= Initialize Session State =================
+def init_session_state():
+    """Initialize all session state variables"""
+    defaults = {
+        "auth_ok": False,
+        "map_version": 0,
+        "target_lpa_name": "",
+        "target_nca_name": "",
+        "lpa_neighbors": [],
+        "nca_neighbors": [],
+        "lpa_neighbors_norm": [],
+        "nca_neighbors_norm": [],
+        "target_lat": None,
+        "target_lon": None,
+        "lpa_geojson": None,
+        "nca_geojson": None,
+        "last_alloc_df": None,
+        "bank_geo_cache": {},
+        "bank_catchment_geo": {},
+        "demand_rows": [{"id": 1, "habitat_name": "", "units": 0.0}],
+        "_next_row_id": 2,
+        "optimization_complete": False
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+init_session_state()
 
 # ================= Safe strings =================
 def sstr(x) -> str:
@@ -71,19 +102,23 @@ DEFAULT_USER = "WC0323"
 DEFAULT_PASS = "Wimbourne"
 
 def require_login():
-    if "auth_ok" not in st.session_state:
-        st.session_state.auth_ok = False
     if st.session_state.auth_ok:
         with st.sidebar:
             if st.button("Log out", key="logout_btn"):
+                # Clear session state on logout
+                for key in list(st.session_state.keys()):
+                    if key != "auth_ok":
+                        del st.session_state[key]
                 st.session_state.auth_ok = False
                 st.rerun()
         return
+    
     st.markdown("## 🔐 Sign in")
     with st.form("login_form"):
         u = st.text_input("Username")
         p = st.text_input("Password", type="password")
         ok = st.form_submit_button("Sign in")
+    
     if ok:
         valid_u = st.secrets.get("auth", {}).get("username", DEFAULT_USER)
         valid_p = st.secrets.get("auth", {}).get("password", DEFAULT_PASS)
@@ -97,17 +132,18 @@ def require_login():
 
 require_login()
 
-# --- Map version for forcing a fresh render on reruns ---
-if "map_version" not in st.session_state:
-    st.session_state["map_version"] = 0
-
-
 # ================= HTTP helpers =================
 def http_get(url, params=None, headers=None, timeout=25):
     try:
         r = requests.get(url, params=params or {}, headers=headers or UA, timeout=timeout)
         r.raise_for_status()
         return r
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Timeout connecting to {url}")
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(f"Connection error to {url}")
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.response.status_code} error for {url}")
     except Exception as e:
         raise RuntimeError(f"HTTP error for {url}: {e}")
 
@@ -116,6 +152,12 @@ def http_post(url, data=None, headers=None, timeout=25):
         r = requests.post(url, data=data or {}, headers=headers or UA, timeout=timeout)
         r.raise_for_status()
         return r
+    except requests.exceptions.Timeout:
+        raise RuntimeError(f"Timeout connecting to {url}")
+    except requests.exceptions.ConnectionError:
+        raise RuntimeError(f"Connection error to {url}")
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"HTTP {e.response.status_code} error for {url}")
     except Exception as e:
         raise RuntimeError(f"HTTP POST error for {url}: {e}")
 
@@ -265,8 +307,10 @@ with st.sidebar:
         help="How to treat 'quoted' units when computing quantity_available."
     )
 
-def load_backend(xls_file) -> Dict[str, pd.DataFrame]:
-    x = pd.ExcelFile(xls_file)
+@st.cache_data
+def load_backend(xls_bytes) -> Dict[str, pd.DataFrame]:
+    """Load backend with caching to prevent reprocessing"""
+    x = pd.ExcelFile(BytesIO(xls_bytes))
     backend = {
         "Banks": pd.read_excel(x, "Banks"),
         "Pricing": pd.read_excel(x, "Pricing"),
@@ -280,11 +324,12 @@ def load_backend(xls_file) -> Dict[str, pd.DataFrame]:
 
 backend = None
 if uploaded:
-    backend = load_backend(uploaded)
+    backend = load_backend(uploaded.getvalue())
 elif use_example:
     ex = Path("data/HabitatBackend_WITH_STOCK.xlsx")
     if ex.exists():
-        backend = load_backend(ex.open("rb"))
+        with ex.open("rb") as f:
+            backend = load_backend(f.read())
 
 if backend is None:
     st.warning("Upload your backend workbook to continue.", icon="⚠️")
@@ -347,7 +392,7 @@ def enrich_banks_geography(banks_df: pd.DataFrame) -> pd.DataFrame:
     df = banks_df.copy()
     if "lpa_name" not in df.columns: df["lpa_name"] = ""
     if "nca_name" not in df.columns: df["nca_name"] = ""
-    cache = st.session_state.setdefault("bank_geo_cache", {})
+    cache = st.session_state["bank_geo_cache"]
     needs = df[(df["lpa_name"].map(sstr) == "") | (df["nca_name"].map(sstr) == "")]
     prog = None
     if len(needs) > 0:
@@ -436,18 +481,6 @@ with st.container():
     with c3:
         run_locate = st.button("Locate", key="locate_btn")
 
-# Restore session
-target_lpa_name = st.session_state.get("target_lpa_name", "")
-target_nca_name = st.session_state.get("target_nca_name", "")
-lpa_neighbors = st.session_state.get("lpa_neighbors", [])
-nca_neighbors = st.session_state.get("nca_neighbors", [])
-lpa_neighbors_norm = st.session_state.get("lpa_neighbors_norm", [])
-nca_neighbors_norm = st.session_state.get("nca_neighbors_norm", [])
-target_lat = st.session_state.get("target_lat", None)
-target_lon = st.session_state.get("target_lon", None)
-lpa_geojson = st.session_state.get("lpa_geojson", None)
-nca_geojson = st.session_state.get("nca_geojson", None)
-
 def find_site(postcode: str, address: str):
     if sstr(postcode):
         lat, lon, _ = get_postcode_info(postcode)
@@ -467,6 +500,8 @@ def find_site(postcode: str, address: str):
     nca_nei = [n for n in layer_intersect_names(NCA_URL, nca_geom_esri, "NCA_Name") if n != t_nca]
     lpa_nei_norm = [norm_name(n) for n in lpa_nei]
     nca_nei_norm = [norm_name(n) for n in nca_nei]
+    
+    # Update session state
     st.session_state["target_lpa_name"] = t_lpa
     st.session_state["target_nca_name"] = t_nca
     st.session_state["lpa_neighbors"] = lpa_nei
@@ -477,39 +512,32 @@ def find_site(postcode: str, address: str):
     st.session_state["target_lon"] = lon
     st.session_state["lpa_geojson"] = lpa_gj
     st.session_state["nca_geojson"] = nca_gj
-    # clear any previous results
-    st.session_state.pop("last_alloc_df", None)
+    st.session_state["last_alloc_df"] = None  # Clear previous results
+    st.session_state["optimization_complete"] = False
+    
     return t_lpa, t_nca
 
 if run_locate:
     try:
         tl, tn = find_site(postcode, address)
-        st.session_state["map_version"] += 1   # <— force map re-mount after Locate
         st.success(f"Found LPA: **{tl}** | NCA: **{tn}**")
+        st.rerun()  # Force refresh to update map
     except Exception as e:
         st.error(f"Location error: {e}")
 
-
-# --- Persistent Locate banner (stays after reruns) ---
-if sstr(st.session_state.get("target_lpa_name")) or sstr(st.session_state.get("target_nca_name")):
+# Show persistent location banner
+if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
     st.success(
-        f"LPA: **{sstr(st.session_state.get('target_lpa_name') or '—')}** | "
-        f"NCA: **{sstr(st.session_state.get('target_nca_name') or '—')}**"
+        f"LPA: **{st.session_state['target_lpa_name'] or '—'}** | "
+        f"NCA: **{st.session_state['target_nca_name'] or '—'}**"
     )
 
-# Create a fixed placeholder for the map so it never disappears
-map_placeholder = st.container()
+# ================= Map Container (Always Visible) =================
+map_container = st.container()
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
 NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
-
-def init_demand_state():
-    if "demand_rows" not in st.session_state:
-        st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
-        st.session_state._next_row_id = 2
-
-init_demand_state()
 
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
@@ -534,6 +562,7 @@ with st.container(border=True):
         with c3:
             if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
                 to_delete.append(row["id"])
+    
     if to_delete:
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
         st.rerun()
@@ -556,7 +585,8 @@ with st.container(border=True):
             st.rerun()
     with cc3:
         if st.button("🧹 Clear all", key="clear_all_btn"):
-            init_demand_state()
+            st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
+            st.session_state._next_row_id = 2
             st.rerun()
 
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
@@ -1083,11 +1113,11 @@ left, right = st.columns([1,1])
 with left:
     run = st.button("Optimise now", type="primary", disabled=demand_df.empty, key="optimise_btn")
 with right:
-    if target_lpa_name or target_nca_name:
-        st.caption(f"LPA: {target_lpa_name or '—'} | NCA: {target_nca_name or '—'} | "
-                   f"LPA neigh: {len(lpa_neighbors)} | NCA neigh: {len(nca_neighbors)}")
+    if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
+        st.caption(f"LPA: {st.session_state['target_lpa_name'] or '—'} | NCA: {st.session_state['target_nca_name'] or '—'} | "
+                   f"LPA neigh: {len(st.session_state['lpa_neighbors'])} | NCA neigh: {len(st.session_state['nca_neighbors'])}")
     else:
-        st.caption("Tip: run ‘Locate’ first for precise tiers (else assumes ‘far’).")
+        st.caption("Tip: run 'Locate' first for precise tiers (else assumes 'far').")
 
 # ================= Diagnostics =================
 with st.expander("🔎 Diagnostics", expanded=False):
@@ -1100,8 +1130,8 @@ with st.expander("🔎 Diagnostics", expanded=False):
             total_units_d = float(dd["units_required"].sum())
             chosen_size_d = select_contract_size(total_units_d, present_sizes)
             st.write(f"**Chosen contract size:** `{chosen_size_d}` (present sizes: {present_sizes}, total demand: {total_units_d})")
-            st.write(f"**Target LPA:** {target_lpa_name or '—'}  |  **Target NCA:** {target_nca_name or '—'}")
-            st.write(f"**# LPA neighbours:** {len(lpa_neighbors)}  | **# NCA neighbours:** {len(nca_neighbors)}")
+            st.write(f"**Target LPA:** {st.session_state['target_lpa_name'] or '—'}  |  **Target NCA:** {st.session_state['target_nca_name'] or '—'}")
+            st.write(f"**# LPA neighbours:** {len(st.session_state['lpa_neighbors'])}  | **# NCA neighbours:** {len(st.session_state['nca_neighbors'])}")
 
             s = backend["Stock"].copy()
             s["quantity_available"] = pd.to_numeric(s["quantity_available"], errors="coerce").fillna(0)
@@ -1111,9 +1141,9 @@ with st.expander("🔎 Diagnostics", expanded=False):
 
             options_preview, _, _ = prepare_options(
                 dd, chosen_size_d,
-                sstr(target_lpa_name), sstr(target_nca_name),
-                [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
-                lpa_neighbors_norm, nca_neighbors_norm
+                sstr(st.session_state["target_lpa_name"]), sstr(st.session_state["target_nca_name"]),
+                [sstr(n) for n in st.session_state["lpa_neighbors"]], [sstr(n) for n in st.session_state["nca_neighbors"]],
+                st.session_state["lpa_neighbors_norm"], st.session_state["nca_neighbors_norm"]
             )
             if not options_preview:
                 st.error("No candidate options (check prices/stock/rules).")
@@ -1271,7 +1301,7 @@ with st.expander("💷 Pricing completeness (this contract size)", expanded=Fals
             if missing.empty:
                 st.success(f"All exact pricing rows exist for size `{chosen_size_pc}` across the demanded habitats.")
             else:
-                st.warning("Some exact pricing rows are missing — that’s fine if those rows are untradeable or Medium/Low use proxies.")
+                st.warning("Some exact pricing rows are missing — that's fine if those rows are untradeable or Medium/Low use proxies.")
                 st.dataframe(
                     missing.sort_values(["habitat_name","bank_id","tier"]),
                     use_container_width=True, hide_index=True
@@ -1294,7 +1324,7 @@ if run:
             st.stop()
 
         # Auto-locate if user typed address/postcode but forgot Locate
-        if not sstr(target_lpa_name) or not sstr(target_nca_name):
+        if not st.session_state["target_lpa_name"] or not st.session_state["target_nca_name"]:
             if sstr(postcode) or sstr(address):
                 try:
                     find_site(postcode, address)
@@ -1305,22 +1335,25 @@ if run:
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
         unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h != NET_GAIN_LABEL]
         if unknown:
-            st.error(f"These demand habitats aren’t in the catalog: {unknown}")
+            st.error(f"These demand habitats aren't in the catalog: {unknown}")
             st.stop()
 
-        target_lpa = sstr(st.session_state.get("target_lpa_name", target_lpa_name))
-        target_nca = sstr(st.session_state.get("target_nca_name", target_nca_name))
-        lpa_neighbors = st.session_state.get("lpa_neighbors", lpa_neighbors)
-        nca_neighbors = st.session_state.get("nca_neighbors", nca_neighbors)
-        lpa_neighbors_norm = st.session_state.get("lpa_neighbors_norm", lpa_neighbors_norm)
-        nca_neighbors_norm = st.session_state.get("nca_neighbors_norm", nca_neighbors_norm)
+        # Use session state values
+        target_lpa = st.session_state["target_lpa_name"]
+        target_nca = st.session_state["target_nca_name"]
+        lpa_neighbors = st.session_state["lpa_neighbors"]
+        nca_neighbors = st.session_state["nca_neighbors"]
+        lpa_neighbors_norm = st.session_state["lpa_neighbors_norm"]
+        nca_neighbors_norm = st.session_state["nca_neighbors_norm"]
 
-        alloc_df, total_cost, size = optimise(
-            demand_df,
-            target_lpa, target_nca,
-            [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
-            lpa_neighbors_norm, nca_neighbors_norm
-        )
+        # Run optimization
+        with st.spinner("Running optimization..."):
+            alloc_df, total_cost, size = optimise(
+                demand_df,
+                target_lpa, target_nca,
+                [sstr(n) for n in lpa_neighbors], [sstr(n) for n in nca_neighbors],
+                lpa_neighbors_norm, nca_neighbors_norm
+            )
 
         total_with_admin = total_cost + ADMIN_FEE_GBP
         st.success(
@@ -1431,10 +1464,9 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
 
-        # Save to session for results map
+        # Save to session for results map and set flag
         st.session_state["last_alloc_df"] = alloc_df.copy()
-        st.session_state["map_version"] += 1   # <— force map re-mount after Optimise
-
+        st.session_state["optimization_complete"] = True
         
         # downloads
         st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
@@ -1449,136 +1481,140 @@ if run:
     except Exception as e:
         st.error(f"Optimiser error: {e}")
 
-# ================= Always-on map render (fixed placeholder) =================
-with map_placeholder:
-    st.markdown("### Map")
+# ================= Always-on map render (in fixed container) =================
+def build_base_map():
+    lat = st.session_state.get("target_lat", None)
+    lon = st.session_state.get("target_lon", None)
+    lpa_gj = st.session_state.get("lpa_geojson", None)
+    nca_gj = st.session_state.get("nca_geojson", None)
+    t_lpa = st.session_state.get("target_lpa_name", "")
+    t_nca = st.session_state.get("target_nca_name", "")
 
-    def build_base_map():
-        lat = st.session_state.get("target_lat", None)
-        lon = st.session_state.get("target_lon", None)
-        lpa_gj = st.session_state.get("lpa_geojson", None)
-        nca_gj = st.session_state.get("nca_geojson", None)
-        t_lpa = sstr(st.session_state.get("target_lpa_name",""))
-        t_nca = sstr(st.session_state.get("target_nca_name",""))
+    if lat is None or lon is None:
+        fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
+    else:
+        fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
+        add_geojson_layer(fmap, lpa_gj, f"LPA: {t_lpa}" if t_lpa else "LPA", color="red", weight=2, fill_opacity=0.05)
+        add_geojson_layer(fmap, nca_gj, f"NCA: {t_nca}" if t_nca else "NCA", color="yellow", weight=3, fill_opacity=0.05)
+        try:
+            folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
+        except Exception:
+            pass
+    folium.LayerControl(collapsed=True).add_to(fmap)
+    return fmap
 
-        if lat is None or lon is None:
-            fmap = folium.Map(location=[54.5, -2.5], zoom_start=5, control_scale=True)
-        else:
-            fmap = folium.Map(location=[lat, lon], zoom_start=11, control_scale=True)
-            add_geojson_layer(fmap, lpa_gj, f"LPA: {t_lpa}" if t_lpa else "LPA", color="red", weight=2, fill_opacity=0.05)
-            add_geojson_layer(fmap, nca_gj, f"NCA: {t_nca}" if t_nca else "NCA", color="yellow", weight=3, fill_opacity=0.05)
+def build_results_map(alloc_df: pd.DataFrame):
+    fmap = build_base_map()
+    lat0 = st.session_state.get("target_lat", None)
+    lon0 = st.session_state.get("target_lon", None)
+
+    # Bank coordinates via Banks (geocode if needed)
+    bank_coords: Dict[str, Tuple[float,float]] = {}
+    banks_df = backend["Banks"].copy()
+    for _, b in banks_df.iterrows():
+        bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
+        loc = bank_row_to_latlon(b)
+        if loc:
+            bank_coords[bkey] = (loc[0], loc[1])
+
+    if not alloc_df.empty:
+        grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
+        for (bkey, bname), g in grouped:
             try:
-                folium.CircleMarker([lat, lon], radius=6, color="red", fill=True, tooltip="Target site").add_to(fmap)
-            except Exception:
-                pass
-        folium.LayerControl(collapsed=True).add_to(fmap)
-        return fmap
+                latlon = bank_coords.get(sstr(bkey))
+                if not latlon:
+                    continue
+                lat_b, lon_b = latlon
 
-    def build_results_map(alloc_df: pd.DataFrame):
-        fmap = build_base_map()
-        lat0 = st.session_state.get("target_lat", None)
-        lon0 = st.session_state.get("target_lon", None)
-
-        # Bank coordinates via Banks (geocode if needed)
-        bank_coords: Dict[str, Tuple[float,float]] = {}
-        banks_df = backend["Banks"].copy()
-        for _, b in banks_df.iterrows():
-            bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
-            loc = bank_row_to_latlon(b)
-            if loc:
-                bank_coords[bkey] = (loc[0], loc[1])
-
-        if not alloc_df.empty:
-            grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
-            for (bkey, bname), g in grouped:
-                try:
-                    latlon = bank_coords.get(sstr(bkey))
-                    if not latlon:
-                        continue
-                    lat_b, lon_b = latlon
-
-                    # Catchments (cached)
-                    bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
-                    cache_key = sstr(bkey)
-                    if cache_key not in bank_catch_cache:
-                        try:
-                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                            bank_catch_cache[cache_key] = {
-                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                            }
-                        except Exception:
-                            bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
-
-                    bgeo = bank_catch_cache[cache_key]
-                    add_geojson_layer(
-                        fmap, bgeo.get("lpa_gj"),
-                        name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
-                        color="green", weight=2, fill_opacity=MAP_CATCHMENT_ALPHA
-                    )
-                    add_geojson_layer(
-                        fmap, bgeo.get("nca_gj"),
-                        name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
-                        color="blue", weight=3, fill_opacity=MAP_CATCHMENT_ALPHA
-                    )
-
-                    # Marker & popup
+                # Catchments (cached)
+                cache_key = sstr(bkey)
+                if cache_key not in st.session_state["bank_catchment_geo"]:
                     try:
-                        folium.Marker(
-                            [lat_b, lon_b],
-                            icon=folium.Icon(color="green", icon="leaf"),
-                            popup=folium.Popup("<br>".join([
-                                f"<b>Site (BANK_KEY):</b> {sstr(bname) or sstr(bkey)}",
-                                f"<b>Total units:</b> {g['units_supplied'].sum():.3f}",
-                                f"<b>Total cost:</b> £{g['cost'].sum():,.0f}",
-                                "<b>Breakdown:</b>",
-                                *[
-                                    f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})"
-                                    for _, r in g.sort_values('units_supplied', ascending=False).head(6).iterrows()
-                                ]
-                            ]), max_width=420)
+                        b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                        st.session_state["bank_catchment_geo"][cache_key] = {
+                            "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                            "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                        }
+                    except Exception:
+                        st.session_state["bank_catchment_geo"][cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+
+                bgeo = st.session_state["bank_catchment_geo"][cache_key]
+                add_geojson_layer(
+                    fmap, bgeo.get("lpa_gj"),
+                    name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                    color="green", weight=2, fill_opacity=MAP_CATCHMENT_ALPHA
+                )
+                add_geojson_layer(
+                    fmap, bgeo.get("nca_gj"),
+                    name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                    color="blue", weight=3, fill_opacity=MAP_CATCHMENT_ALPHA
+                )
+
+                # Marker & popup
+                try:
+                    folium.Marker(
+                        [lat_b, lon_b],
+                        icon=folium.Icon(color="green", icon="leaf"),
+                        popup=folium.Popup("<br>".join([
+                            f"<b>Site (BANK_KEY):</b> {sstr(bname) or sstr(bkey)}",
+                            f"<b>Total units:</b> {g['units_supplied'].sum():.3f}",
+                            f"<b>Total cost:</b> £{g['cost'].sum():,.0f}",
+                            "<b>Breakdown:</b>",
+                            *[
+                                f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})"
+                                for _, r in g.sort_values('units_supplied', ascending=False).head(6).iterrows()
+                            ]
+                        ]), max_width=420)
+                    ).add_to(fmap)
+                except Exception:
+                    pass
+
+                # Route line only if target coords exist
+                if (lat0 is not None) and (lon0 is not None):
+                    try:
+                        folium.PolyLine(
+                            locations=[[lat0, lon0], [lat_b, lon_b]],
+                            weight=2, opacity=0.8, dash_array="6,6", color="blue",
+                            tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
                         ).add_to(fmap)
                     except Exception:
                         pass
+            except Exception as map_e:
+                st.caption(f"Skipped map overlay for BANK_KEY {sstr(bname) or sstr(bkey)}: {map_e}")
 
-                    # Route line only if target coords exist
-                    if (lat0 is not None) and (lon0 is not None):
-                        try:
-                            folium.PolyLine(
-                                locations=[[lat0, lon0], [lat_b, lon_b]],
-                                weight=2, opacity=0.8, dash_array="6,6", color="blue",
-                                tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
-                            ).add_to(fmap)
-                        except Exception:
-                            pass
-                except Exception as map_e:
-                    st.caption(f"Skipped map overlay for BANK_KEY {sstr(bname) or sstr(bkey)}: {map_e}")
+    return fmap
 
-        return fmap
-
-    # Decide which map to show every run (so it never "disappears")
-    alloc_present = st.session_state.get("last_alloc_df", None)
+# ================= Map Display (Always Visible) =================
+with map_container:
+    st.markdown("### Map")
+    
     try:
-        if isinstance(alloc_present, pd.DataFrame) and not alloc_present.empty:
-            fmap_to_show = build_results_map(alloc_present)
-        else:
-            fmap_to_show = build_base_map()
-
-        map_key = f"main_map_{st.session_state.get('map_version', 0)}"
+        # Show appropriate map based on state
+        alloc_present = st.session_state.get("last_alloc_df", None)
         
+        if isinstance(alloc_present, pd.DataFrame) and not alloc_present.empty and st.session_state.get("optimization_complete", False):
+            # Show results map
+            fmap_to_show = build_results_map(alloc_present)
+            map_key = f"results_map_{id(alloc_present)}"
+        else:
+            # Show base map
+            fmap_to_show = build_base_map()
+            map_key = f"base_map_{st.session_state.get('target_lat', 0)}_{st.session_state.get('target_lon', 0)}"
+        
+        # Render map with unique key to prevent flickering
         try:
             st_folium(fmap_to_show, height=520, use_container_width=True, key=map_key)
         except Exception:
-            # Prefer folium_static (very stable), fall back to st_folium if not available
+            # Fallback to folium_static if st_folium fails
             if folium_static:
                 folium_static(fmap_to_show, width=None, height=520)
             else:
-                st_folium(fmap_to_show, height=520, use_container_width=True, key=map_key)
+                st.error("Map rendering failed")
 
     except Exception as e:
-        st.warning(f"Map rendering skipped due to an error: {e}")
-
-
+        st.warning(f"Map rendering error: {e}")
+        # Show a simple placeholder
+        st.info("Map temporarily unavailable")
 
 
 
