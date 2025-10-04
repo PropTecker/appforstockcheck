@@ -498,7 +498,7 @@ def render_base_map():
 
 if (target_lat is not None) and (target_lon is not None):
     st.markdown("### Map")
-    st_folium(render_base_map(), height=420, returned_objects=[], use_container_width=True)
+    st_folium(render_base_map(), height=420, returned_objects=[], use_container_width=True, key="basemap")
 
 # ========= Demand =========
 st.subheader("2) Demand (units required)")
@@ -1346,79 +1346,84 @@ if run:
         st.dataframe(by_hab, use_container_width=True)
 
         # ------- Map overlay: chosen banks and links -------
-        if (target_lat is not None) and (target_lon is not None):
-            fmap = render_base_map()
-
-            # Bank coordinates via Banks (geocode if needed)
-            bank_coords: Dict[str, Tuple[float,float]] = {}
-            banks_df = backend["Banks"].copy()
-            for _, b in banks_df.iterrows():
-                bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
-                loc = bank_row_to_latlon(b)
-                if loc:
-                    bank_coords[bkey] = (loc[0], loc[1])
-
-            # Summaries per BANK_KEY for popup
-            if 'alloc_df' in locals() and not alloc_df.empty:
-                grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
-                for (bkey, bname), g in grouped:
-                    try:
-                        latlon = bank_coords.get(sstr(bkey))
-                        if not latlon:
-                            continue
-                        lat_b, lon_b = latlon
-
-                        # --- Draw the bank's catchment perimeters (LPA & NCA) ---
-                        bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
-                        cache_key = sstr(bkey)
-                        if cache_key not in bank_catch_cache:
-                            try:
-                                b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
-                                bank_catch_cache[cache_key] = {
-                                    "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
-                                    "nca_name": b_nca_name, "nca_gj": b_nca_gj,
-                                }
-                            except Exception:
-                                bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
-
-                        bgeo = bank_catch_cache[cache_key]
-                        add_geojson_layer(
-                            fmap, bgeo.get("lpa_gj"),
-                            name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
-                            color="green", weight=2, fill_opacity=0.03
-                        )
-                        add_geojson_layer(
-                            fmap, bgeo.get("nca_gj"),
-                            name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
-                            color="blue", weight=3, fill_opacity=0.03
-                        )
-
-                        # Marker + route
-                        popup_lines = []
-                        total_units_b = g["units_supplied"].sum()
-                        total_cost_b = g["cost"].sum()
-                        popup_lines.append(f"<b>Bank:</b> {sstr(bname) or sstr(bkey)}")
-                        popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
-                        popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
-                        popup_lines.append("<b>Breakdown:</b>")
-                        for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
-                            popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
-
-                        folium.Marker(
-                            [lat_b, lon_b],
-                            icon=folium.Icon(color="green", icon="leaf"),
-                            popup=folium.Popup("<br>".join(popup_lines), max_width=420)
-                        ).add_to(fmap)
+        # Always render a map (UK-wide if no target coords),
+        # then add overlays; only draw route lines when coords exist.
+        fmap = render_base_map()
+        
+        # Bank coordinates via Banks (geocode if needed)
+        bank_coords: Dict[str, Tuple[float,float]] = {}
+        banks_df = backend["Banks"].copy()
+        for _, b in banks_df.iterrows():
+            bkey = sstr(b.get("BANK_KEY") or b.get("bank_name") or b.get("bank_id"))
+            loc = bank_row_to_latlon(b)
+            if loc:
+                bank_coords[bkey] = (loc[0], loc[1])
+        
+        # Summaries per BANK_KEY for popup
+        if 'alloc_df' in locals() and not alloc_df.empty:
+            grouped = alloc_df.groupby(["BANK_KEY","bank_name"], dropna=False)
+            for (bkey, bname), g in grouped:
+                try:
+                    latlon = bank_coords.get(sstr(bkey))
+                    if not latlon:
+                        continue
+                    lat_b, lon_b = latlon
+        
+                    # --- Draw the bank's catchment perimeters (LPA & NCA) ---
+                    bank_catch_cache = st.session_state.setdefault("bank_catchment_geo", {})
+                    cache_key = sstr(bkey)
+                    if cache_key not in bank_catch_cache:
+                        try:
+                            b_lpa_name, b_lpa_gj, b_nca_name, b_nca_gj = get_catchment_geo_for_point(lat_b, lon_b)
+                            bank_catch_cache[cache_key] = {
+                                "lpa_name": b_lpa_name, "lpa_gj": b_lpa_gj,
+                                "nca_name": b_nca_name, "nca_gj": b_nca_gj,
+                            }
+                        except Exception:
+                            bank_catch_cache[cache_key] = {"lpa_name": "", "lpa_gj": None, "nca_name": "", "nca_gj": None}
+        
+                    bgeo = bank_catch_cache[cache_key]
+                    add_geojson_layer(
+                        fmap, bgeo.get("lpa_gj"),
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank LPA: {sstr(bgeo.get('lpa_name')) or 'Unknown'}",
+                        color="green", weight=2, fill_opacity=0.03
+                    )
+                    add_geojson_layer(
+                        fmap, bgeo.get("nca_gj"),
+                        name=f"{sstr(bname) or sstr(bkey)} — Bank NCA: {sstr(bgeo.get('nca_name')) or 'Unknown'}",
+                        color="blue", weight=3, fill_opacity=0.03
+                    )
+        
+                    # Marker
+                    popup_lines = []
+                    total_units_b = g["units_supplied"].sum()
+                    total_cost_b = g["cost"].sum()
+                    popup_lines.append(f"<b>Bank:</b> {sstr(bname) or sstr(bkey)}")
+                    popup_lines.append(f"<b>Total units:</b> {total_units_b:.3f}")
+                    popup_lines.append(f"<b>Total cost:</b> £{total_cost_b:,.0f}")
+                    popup_lines.append("<b>Breakdown:</b>")
+                    for _, r in g.sort_values("units_supplied", ascending=False).head(6).iterrows():
+                        popup_lines.append(f"- {sstr(r['supply_habitat'])} — {float(r['units_supplied']):.3f} ({sstr(r['tier'])})")
+        
+                    folium.Marker(
+                        [lat_b, lon_b],
+                        icon=folium.Icon(color="green", icon="leaf"),
+                        popup=folium.Popup("<br>".join(popup_lines), max_width=420)
+                    ).add_to(fmap)
+        
+                    # Route line only if target coords exist
+                    if (target_lat is not None) and (target_lon is not None):
                         folium.PolyLine(
                             locations=[[target_lat, target_lon], [lat_b, lon_b]],
                             weight=2, opacity=0.8, dash_array="6,6", color="blue",
                             tooltip=f"Supply route: target → {sstr(bname) or sstr(bkey)}"
                         ).add_to(fmap)
-                    except Exception as map_e:
-                        st.caption(f"Skipped map overlay for bank {sstr(bname) or sstr(bkey)}: {map_e}")
+                except Exception as map_e:
+                    st.caption(f"Skipped map overlay for bank {sstr(bname) or sstr(bkey)}: {map_e}")
+        
+        st.markdown("### Map (with selected supply)")
+        st_folium(fmap, height=520, returned_objects=[], use_container_width=True, key="resultmap")
 
-            st.markdown("### Map (with selected supply)")
-            st_folium(fmap, height=520, returned_objects=[], use_container_width=True)
 
         # downloads
         def df_to_csv_bytes(df):
