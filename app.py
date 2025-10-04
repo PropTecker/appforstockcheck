@@ -1863,18 +1863,18 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     <table border="1" style="border-collapse: collapse; width: 70%; margin: 0 auto; font-family: Arial, sans-serif; font-size: 11px;">
         <thead>
             <tr>
-                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Development Impact</th>
-                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
+                <th colspan="3" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #F8C237; color: #000;">Development Impact</th>
+                <th colspan="5" style="text-align: center; padding: 8px; border: 1px solid #000; font-weight: bold; background-color: #2A514A; color: #FFFFFF;">Mitigation Supplied from Wild Capital</th>
             </tr>
             <tr>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;">Habitats Lost</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #FFB366; color: #000;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Distinctiveness</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Habitats Supplied</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;"># Units</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Price Per Unit</th>
-                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2D5A27; color: #FFFFFF;">Offset Cost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #F8C237; color: #000;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #F8C237; color: #000;">Habitats Lost</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #F8C237; color: #000;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2A514A; color: #FFFFFF;">Distinctiveness</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2A514A; color: #FFFFFF;">Habitats Supplied</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2A514A; color: #FFFFFF;"># Units</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2A514A; color: #FFFFFF;">Price Per Unit</th>
+                <th style="padding: 6px; border: 1px solid #000; font-weight: bold; background-color: #2A514A; color: #FFFFFF;">Offset Cost</th>
             </tr>
         </thead>
         <tbody>
@@ -1883,7 +1883,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     # Add Area Habitats section with light green background
     if area_habitats:
         html_table += """
-            <tr style="background-color: #90EE90;">
+            <tr style="background-color: #D9F2D0;">
                 <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Area Habitats</td>
             </tr>
         """
@@ -1904,7 +1904,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     # Add Hedgerow Habitats section with light green background
     if hedgerow_habitats:
         html_table += """
-            <tr style="background-color: #90EE90;">
+            <tr style="background-color: #D9F2D0;">
                 <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Hedgerow Habitats</td>
             </tr>
         """
@@ -1925,7 +1925,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     # Add Watercourse Habitats section with light green background
     if watercourse_habitats:
         html_table += """
-            <tr style="background-color: #90EE90;">
+            <tr style="background-color: #D9F2D0;">
                 <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Watercourse Habitats</td>
             </tr>
         """
@@ -1945,7 +1945,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     
     # Add Spatial Risk Multiplier section (placeholder)
     html_table += """
-        <tr style="background-color: #90EE90;">
+        <tr style="background-color: #D9F2D0;">
             <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
         </tr>
         <tr>
