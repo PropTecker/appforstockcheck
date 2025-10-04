@@ -65,6 +65,8 @@ def init_session_state():
         "lpa_geojson": None,
         "nca_geojson": None,
         "last_alloc_df": None,
+        "last_total_cost": 0.0,
+        "last_contract_size": "",
         "bank_geo_cache": {},
         "bank_catchment_geo": {},
         "demand_rows": [{"id": 1, "habitat_name": "", "units": 0.0}],
@@ -77,6 +79,16 @@ def init_session_state():
             st.session_state[key] = value
 
 init_session_state()
+
+def reset_all_form_data():
+    """Reset all form data to start a new quote"""
+    # Keep auth_ok but reset everything else
+    keys_to_keep = ["auth_ok"]
+    for key in list(st.session_state.keys()):
+        if key not in keys_to_keep:
+            del st.session_state[key]
+    # Reinitialize defaults
+    init_session_state()
 
 # ================= Safe strings =================
 def sstr(x) -> str:
@@ -104,7 +116,12 @@ DEFAULT_PASS = "Wimbourne"
 def require_login():
     if st.session_state.auth_ok:
         with st.sidebar:
-            if st.button("Log out", key="logout_btn"):
+            st.markdown("### 🧭 Navigation")
+            if st.button("🆕 Start New Quote", key="reset_btn", help="Clear all data and start a fresh quote", use_container_width=True):
+                reset_all_form_data()
+                st.rerun()
+            st.markdown("---")
+            if st.button("Log out", key="logout_btn", use_container_width=True):
                 # Clear session state on logout
                 for key in list(st.session_state.keys()):
                     if key != "auth_ok":
@@ -821,7 +838,7 @@ with st.container(border=True):
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                {"id": st.session_state._next_row_id, "habitat_name": "", "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
@@ -1650,6 +1667,8 @@ if run:
         
         # NOW save results and set completion flag
         st.session_state["last_alloc_df"] = alloc_df.copy()
+        st.session_state["last_total_cost"] = total_cost
+        st.session_state["last_contract_size"] = size
         st.session_state["optimization_complete"] = True
         
         # Show what we loaded
@@ -1664,9 +1683,22 @@ if run:
             f"Subtotal (units): **£{total_cost:,.0f}**  |  Admin fee: **£{ADMIN_FEE_GBP:,.0f}**  |  "
             f"Grand total: **£{total_with_admin:,.0f}**"
         )
-
-        # ========== SHOW ALL RESULTS (NO RERUN) ==========
         
+        # ========== MAP UPDATE NOTICE ==========
+        st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
+
+    except Exception as e:
+        st.error(f"Optimiser error: {e}")
+
+# ========== DISPLAY OPTIMIZATION RESULTS (PERSISTENT) ==========
+# This section displays results whenever optimization_complete is True
+if st.session_state.get("optimization_complete", False):
+    alloc_df = st.session_state.get("last_alloc_df")
+    total_cost = st.session_state.get("last_total_cost", 0.0)
+    size = st.session_state.get("last_contract_size", "")
+    
+    if alloc_df is not None and not alloc_df.empty:
+        st.markdown("---")
         st.markdown("#### Allocation detail")
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
@@ -1757,6 +1789,7 @@ if run:
         st.dataframe(by_hab, use_container_width=True)
 
         st.markdown("#### Order summary (with admin fee)")
+        total_with_admin = total_cost + ADMIN_FEE_GBP
         summary_df = pd.DataFrame([
             {"Item": "Subtotal (units)", "Amount £": round(total_cost, 2)},
             {"Item": "Admin fee",        "Amount £": round(ADMIN_FEE_GBP, 2)},
@@ -1777,12 +1810,6 @@ if run:
                            file_name="allocation_by_habitat.csv", mime="text/csv")
         st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
                            file_name="order_summary.csv", mime="text/csv")
-        
-        # ========== MAP UPDATE NOTICE (NO RERUN) ==========
-        st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
-
-    except Exception as e:
-        st.error(f"Optimiser error: {e}")
 
 # ================= Email Report Generation =================
 # ================= Email Report Generation (EXACT TEMPLATE MATCH) =================
@@ -2149,33 +2176,24 @@ if (st.session_state.get("optimization_complete", False) and
             st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
         
         # Email generation
-        # Enhanced email generation with .eml file creation and improved mailto options:
-st.markdown("**📧 Email Generation:**")
-
-col1, col2, col3 = st.columns([1, 1, 1])
-
-with col1:
-    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-        st.code(email_html, language="html")
-        st.success("Email HTML generated! Copy the code above and paste into your email client.")
-
-with col2:
-    # Create .eml file content
-    import base64
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    
-    subject = f"RE: BNG Units for site at {location} - {ref_number}"
-    total_with_admin = session_total_cost + ADMIN_FEE_GBP
-    
-    # Create email message
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
-    msg['To'] = ''  # Will be filled by user
-    
-    # Create text version for email clients that don't support HTML
-    text_body = f"""Dear {client_name}
+        st.markdown("**📧 Email Generation:**")
+        
+        # Create .eml file content
+        import base64
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        
+        subject = f"RE: BNG Units for site at {location} - {ref_number}"
+        total_with_admin = session_total_cost + ADMIN_FEE_GBP
+        
+        # Create email message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+        msg['To'] = ''  # Will be filled by user
+        
+        # Create text version for email clients that don't support HTML
+        text_body = f"""Dear {client_name}
 
 Our Ref: {ref_number}
 
@@ -2204,146 +2222,25 @@ If you have any questions, please reply to this email or call 01962 436574.
 
 Best regards,
 Wild Capital Team"""
-    
-    # Attach text and HTML versions
-    text_part = MIMEText(text_body, 'plain')
-    html_part = MIMEText(email_html, 'html')
-    
-    msg.attach(text_part)
-    msg.attach(html_part)
-    
-    # Convert to string
-    eml_content = msg.as_string()
-    
-    # Download button for .eml file
-    st.download_button(
-        "📧 Download Email (.eml)",
-        data=eml_content,
-        file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-        mime="message/rfc822",
-        help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-    )
-
-with col3:
-    # Enhanced mailto with HTML formatting attempts
-    import urllib.parse
-    
-    encoded_subject = urllib.parse.quote(subject)
-    
-    # Approach 1: Try to include HTML in body (some clients support this)
-    html_mailto_body = f"""<html><body>{email_html}</body></html>"""
-    encoded_html_body = urllib.parse.quote(html_mailto_body)
-    
-    # Approach 2: Rich text formatting with line breaks and formatting
-    formatted_text_body = f"""Dear {client_name}
-
-Our Ref: {ref_number}
-
-Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
-
-Thank you for enquiring about BNG Units for your development in {location}
-
-About Us
-Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
-
-Your Quote - £{total_with_admin:,.0f} + VAT
-
-PRICING BREAKDOWN:
-═══════════════════════════════════════════════════════════════════
-
-DEVELOPMENT IMPACT                    |  MITIGATION SUPPLIED
-═══════════════════════════════════════════════════════════════════"""
-    
-    # Add table data in text format
-    all_habitats = []
-    
-    # Get habitat data (same logic as in the function)
-    for _, demand_row in session_demand_df.iterrows():
-        demand_habitat = demand_row["habitat_name"]
-        demand_units = demand_row["units_required"]
         
-        matching_allocs = session_alloc_df[session_alloc_df["demand_habitat"] == demand_habitat]
+        # Attach text and HTML versions
+        text_part = MIMEText(text_body, 'plain')
+        html_part = MIMEText(email_html, 'html')
         
-        for _, alloc_row in matching_allocs.iterrows():
-            if demand_habitat == NET_GAIN_LABEL:
-                demand_distinctiveness = "10% Net Gain"
-                demand_habitat_display = "Any"
-            else:
-                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
-                if not cat_match.empty:
-                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
-                    demand_habitat_display = demand_habitat
-                else:
-                    demand_distinctiveness = "Medium"
-                    demand_habitat_display = demand_habitat
-            
-            supply_habitat = alloc_row["supply_habitat"]
-            supply_units = alloc_row["units_supplied"]
-            unit_price = alloc_row["unit_price"]
-            offset_cost = alloc_row["cost"]
-            
-            supply_cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == supply_habitat]
-            if not supply_cat_match.empty:
-                supply_distinctiveness = supply_cat_match["distinctiveness_name"].iloc[0]
-            else:
-                supply_distinctiveness = "Medium"
-            
-            all_habitats.append({
-                "demand_dist": demand_distinctiveness,
-                "demand_hab": demand_habitat_display,
-                "demand_units": demand_units,
-                "supply_dist": supply_distinctiveness,
-                "supply_hab": supply_habitat,
-                "supply_units": supply_units,
-                "unit_price": unit_price,
-                "cost": offset_cost
-            })
-    
-    # Format table data as text
-    for habitat in all_habitats:
-        formatted_text_body += f"""
-
-{habitat["demand_dist"]} | {habitat["demand_hab"]} | {habitat["demand_units"]:.2f} units
-→ {habitat["supply_dist"]} | {habitat["supply_hab"]} | {habitat["supply_units"]:.2f} units
-   Price: £{habitat["unit_price"]:,.0f}/unit | Cost: £{habitat["cost"]:,.0f}"""
-    
-    formatted_text_body += f"""
-
-═══════════════════════════════════════════════════════════════════
-Planning Discharge Pack: £{ADMIN_FEE_GBP:,.0f}
-TOTAL: £{total_with_admin:,.0f} + VAT
-═══════════════════════════════════════════════════════════════════
-
-Next Steps:
-BNG is a pre-commencement, not a pre-planning, condition.
-
-To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-
-If you have any questions, please reply to this email or call 01962 436574.
-
-Best regards,
-Wild Capital Team"""
-    
-    encoded_formatted_body = urllib.parse.quote(formatted_text_body)
-    
-    # Create multiple options
-    st.markdown("**📧 Quick Email Options:**")
-    
-    # Option 1: Formatted text version (most reliable)
-    mailto_formatted = f"mailto:?subject={encoded_subject}&body={encoded_formatted_body}"
-    st.markdown(f"[📧 Rich Text Email]({mailto_formatted})")
-    st.caption("Formatted text version with table layout")
-    
-    # Option 2: Try HTML (works in some clients)
-    mailto_html = f"mailto:?subject={encoded_subject}&body={encoded_html_body}"
-    st.markdown(f"[📧 HTML Email (experimental)]({mailto_html})")
-    st.caption("May work in some email clients")
-    
-    # Option 3: Simple version (fallback)
-    simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}%0D%0A%0D%0APlease see attached detailed breakdown."
-    mailto_simple = f"mailto:?subject={encoded_subject}&body={simple_body}"
-    st.markdown(f"[📧 Simple Email]({mailto_simple})")
-    st.caption("Basic version for maximum compatibility")
+        msg.attach(text_part)
+        msg.attach(html_part)
+        
+        # Convert to string
+        eml_content = msg.as_string()
+        
+        # Download button for .eml file
+        st.download_button(
+            "📧 Download Email (.eml)",
+            data=eml_content,
+            file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+            mime="message/rfc822",
+            help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+        )
             
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
