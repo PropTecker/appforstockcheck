@@ -71,7 +71,10 @@ def init_session_state():
         "bank_catchment_geo": {},
         "demand_rows": [{"id": 1, "habitat_name": "", "units": 0.0}],
         "_next_row_id": 2,
-        "optimization_complete": False
+        "optimization_complete": False,
+        "postcode_input": "",
+        "address_input": "",
+        "success_message": ""
     }
     
     for key, value in defaults.items():
@@ -82,11 +85,22 @@ init_session_state()
 
 def reset_all_form_data():
     """Reset all form data to start a new quote"""
-    # Keep auth_ok but reset everything else
-    keys_to_keep = ["auth_ok"]
+    # Keep auth_ok and backend-related state (uploaded file handled by Streamlit widget automatically)
+    # Also preserve postcode/address for convenience
+    keys_to_keep = [
+        "auth_ok",
+        "postcode_input",
+        "address_input"
+    ]
+    
+    # Store backend state to preserve
+    backend_state = {}
+    # Note: uploaded file is handled by st.file_uploader widget state automatically
+    
     for key in list(st.session_state.keys()):
         if key not in keys_to_keep:
             del st.session_state[key]
+    
     # Reinitialize defaults
     init_session_state()
 
@@ -492,9 +506,9 @@ with st.container():
     st.subheader("1) Locate target site")
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        postcode = st.text_input("Postcode (quicker)", value="")
+        postcode = st.text_input("Postcode (quicker)", value=st.session_state.get("postcode_input", ""), key="postcode_input")
     with c2:
-        address = st.text_input("Address (if no postcode)", value="")
+        address = st.text_input("Address (if no postcode)", value=st.session_state.get("address_input", ""), key="address_input")
     with c3:
         run_locate = st.button("Locate", key="locate_btn")
 
@@ -552,6 +566,10 @@ if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         f"LPA: **{st.session_state['target_lpa_name'] or '—'}** | "
         f"NCA: **{st.session_state['target_nca_name'] or '—'}**"
     )
+
+# Show persistent success message after optimization
+if st.session_state.get("success_message", ""):
+    st.success(st.session_state["success_message"])
 
 # ================= Map functions (CORRECTED STYLING) =================
 # ================= Map functions (CORRECTED STYLING) =================
@@ -1678,7 +1696,9 @@ if run:
             st.warning(f"⚠️ Failed to load catchment data for: {', '.join(catchments_failed)}")
 
         total_with_admin = total_cost + ADMIN_FEE_GBP
-        st.success(
+        
+        # Store success message in session state for persistence
+        st.session_state["success_message"] = (
             f"Optimisation complete. Contract size = **{size}**. "
             f"Subtotal (units): **£{total_cost:,.0f}**  |  Admin fee: **£{ADMIN_FEE_GBP:,.0f}**  |  "
             f"Grand total: **£{total_with_admin:,.0f}**"
@@ -1797,20 +1817,6 @@ if st.session_state.get("optimization_complete", False):
             {"Item": "Grand total",      "Amount £": round(total_with_admin, 2)},
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
-
-        # Downloads
-        st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
-                           file_name="allocation.csv", mime="text/csv")
-        st.download_button("Download site/habitat totals (CSV)",
-                           data=df_to_csv_bytes(site_hab_totals),
-                           file_name="site_habitat_totals_effective_units.csv",
-                           mime="text/csv")
-        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
-                           file_name="allocation_by_bank.csv", mime="text/csv")
-        st.download_button("Download by habitat (CSV)", data=df_to_csv_bytes(by_hab),
-                           file_name="allocation_by_habitat.csv", mime="text/csv")
-        st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
-                           file_name="order_summary.csv", mime="text/csv")
 
 # ================= Email Report Generation =================
 # ================= Email Report Generation (EXACT TEMPLATE MATCH) =================
