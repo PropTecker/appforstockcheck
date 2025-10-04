@@ -898,15 +898,23 @@ def optimise(demand_df: pd.DataFrame,
     try:
         import pulp
 
-        # Stage 1: minimise FAR usage
+        # Stage 1: minimise FAR usage (with a tiny cost hint on non-FAR to break ties)
         prob1 = pulp.LpProblem("BNG_MinFar", pulp.LpMinimize)
         x1 = [pulp.LpVariable(f"x_{i}", lowBound=0) for i in range(len(options))]
         bank_keys = sorted({opt["BANK_KEY"] for opt in options})
         y1 = {b: pulp.LpVariable(f"y_{norm_name(b)}", lowBound=0, upBound=1, cat="Binary") for b in bank_keys}
 
         far_idx = [i for i, o in enumerate(options) if o["proximity"] == "far"]
+        nonfar_idx = [i for i, o in enumerate(options) if o["proximity"] != "far"]
+
         far_usage = pulp.lpSum([x1[i] for i in far_idx])
-        prob1 += far_usage
+
+        # Microscopic non-FAR cost hint to choose cheapest among local+adjacent when FAR==0
+        eps_nonfar_cost = 1e-9
+        nonfar_cost_hint = eps_nonfar_cost * pulp.lpSum([options[i]["unit_price"] * x1[i] for i in nonfar_idx])
+
+        prob1 += far_usage + nonfar_cost_hint
+
 
         # Link x to bank y (by total capacity per bank)
         M_bank: Dict[str, float] = {b: 0.0 for b in bank_keys}
