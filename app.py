@@ -1859,10 +1859,6 @@ def generate_client_report_table(alloc_df: pd.DataFrame, demand_df: pd.DataFrame
     current_date = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
     current_user = "PropTecker"  # You can make this dynamic
     
-    # Email inputs
-    client_name = st.text_input("Client Name", value="INSERT NAME", key="email_client_name_input")
-    ref_number = st.text_input("Reference Number", value="BNG00XXX", key="email_ref_number_input")
-    location = st.text_input("Development Location", value="INSERT LOCATION", key="email_location_input")
     
     total_with_admin = total_cost + admin_fee
     
