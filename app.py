@@ -256,6 +256,34 @@ def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weig
     except Exception:
         pass
 
+# --- Ledger helpers ---
+LEDGER_AREA = "area"
+LEDGER_HEDGE = "hedgerow"
+LEDGER_WATER = "watercourse"
+
+NET_GAIN_WATERCOURSE_LABEL = "Net Gain (Watercourses)"  # new
+
+def get_umbrella_for(hab_name: str, catalog: pd.DataFrame) -> str:
+    """Return 'hedgerow' | 'watercourse' | 'area' for a habitat name using UmbrellaType; 
+       also handles special Net Gain labels."""
+    h = sstr(hab_name)
+    if not h:
+        return LEDGER_AREA
+    if h == NET_GAIN_HEDGEROW_LABEL:
+        return LEDGER_HEDGE
+    if h == NET_GAIN_WATERCOURSE_LABEL:
+        return LEDGER_WATER
+    # Lookup in catalog
+    m = catalog[catalog["habitat_name"].astype(str).str.strip() == h]
+    umb = sstr(m.iloc[0]["UmbrellaType"]) if not m.empty and "UmbrellaType" in m.columns else ""
+    umb = umb.lower()
+    if umb == LEDGER_HEDGE:
+        return LEDGER_HEDGE
+    if umb == LEDGER_WATER:
+        return LEDGER_WATER
+    return LEDGER_AREA
+
+
 # ================= Geocoding / lookups =================
 def get_postcode_info(pc: str) -> Tuple[float, float, str]:
     pc_clean = sstr(pc).replace(" ", "").upper()
@@ -855,7 +883,7 @@ NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
 
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
-) + [NET_GAIN_HEDGEROW_LABEL]  # Hedgerow Net Gain at end, not in catalog
+) + [NET_GAIN_HEDGEROW_LABEL, NET_GAIN_WATERCOURSE_LABEL]  # add watercourses NG
 
 with st.container(border=True):
     st.markdown("**Add habitats one by one** (type to search the catalog):")
@@ -886,7 +914,7 @@ with st.container(border=True):
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
         st.rerun()
 
-    cc1, cc2, cc3, cc4 = st.columns([0.25, 0.25, 0.25, 0.25])
+    cc1, cc2, cc3, cc4, cc5 = st.columns([0.22, 0.22, 0.22, 0.22, 0.12])
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
@@ -911,12 +939,21 @@ with st.container(border=True):
             st.session_state._next_row_id += 1
             st.rerun()
     with cc4:
+        if st.button("➕ Net Gain (Watercourses)", key="add_ng_water_btn",
+                     help="Adds a 'Net Gain (Watercourses)' line. Can be fulfilled using any watercourse habitat credit."):
+            st.session_state.demand_rows.append(
+                {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_WATERCOURSE_LABEL, "units": 0.0}
+            )
+            st.session_state._next_row_id += 1
+            st.rerun()
+    with cc5:
         if st.button("🧹 Clear all", key="clear_all_btn"):
-            # Clear all rows - reset to empty state
+            # Reset existing rows to empty state (preserves row count & IDs)
             for row in st.session_state.demand_rows:
                 row["habitat_name"] = ""
                 row["units"] = 0.0
             st.rerun()
+
 
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
 st.metric("Total units", f"{total_units:.2f}")
@@ -938,6 +975,33 @@ else:
     st.info("Add at least one habitat and units to continue.", icon="ℹ️")
 
 # ================= Legality =================
+def enforce_watercourse_rules(demand_row, supply_row, dist_levels_map_local) -> bool:
+    """
+    Watercourse trading rules (mirrors hedgerow approach until you specify otherwise):
+    - Very High: Same habitat required
+    - High: Like for like or better (same habitat or higher distinctiveness)
+    - Medium, Low, Very Low: Same distinctiveness or better
+    - Net Gain (Watercourses): Anything within watercourse ledger
+    """
+    dh = sstr(demand_row.get("habitat_name"))
+    sh = sstr(supply_row.get("habitat_name"))
+    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
+    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
+    d_key = d_dist_name.lower()
+    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
+    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
+
+    if dh == NET_GAIN_WATERCOURSE_LABEL:
+        return True
+    if d_key in ["very high", "v.high"]:
+        return sh == dh
+    if d_key == "high":
+        return (sh == dh) or (s_val > d_val)
+    if d_key in ["medium", "low", "very low", "v.low"]:
+        return s_val >= d_val
+    return True
+
+
 def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
     if explicit_rule:
         return True
@@ -1408,30 +1472,50 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
 def optimise(demand_df: pd.DataFrame,
              target_lpa: str, target_nca: str,
              lpa_neigh: List[str], nca_neigh: List[str],
-             lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[pd.DataFrame, float, str]:
-    
+             lpa_neigh_norm: List[str], nca_neigh_norm: List[str]
+             ) -> Tuple[pd.DataFrame, float, str]:
+    # Pick contract size from total demand (unchanged)
     chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
-    
-    # Prepare options for area habitats (non-hedgerow)
-    options, stock_caps, stock_bankkey = prepare_options(
+
+    # ---- Build options per ledger ----
+    # 1) Area (non-hedgerow, non-watercourse)
+    options_area, caps_area, bk_area = prepare_options(
         demand_df, chosen_size, target_lpa, target_nca,
         lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
     )
-    
-    # Prepare options for hedgerow habitats
-    hedgerow_options, hedgerow_stock_caps, hedgerow_stock_bankkey = prepare_hedgerow_options(
+
+    # 2) Hedgerow
+    options_hedge, caps_hedge, bk_hedge = prepare_hedgerow_options(
         demand_df, chosen_size, target_lpa, target_nca,
         lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
     )
-    
-    # Combine options (both use same demand_df indices)
-    options.extend(hedgerow_options)
-    stock_caps.update(hedgerow_stock_caps)
-    stock_bankkey.update(hedgerow_stock_bankkey)
-    
+
+    # 3) Watercourse
+    options_water, caps_water, bk_water = prepare_watercourse_options(
+        demand_df, chosen_size, target_lpa, target_nca,
+        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+    )
+
+    # ---- Combine ledgers into one joint solve ----
+    options: List[dict] = []
+    options.extend(options_area)
+    options.extend(options_hedge)
+    options.extend(options_water)
+
+    stock_caps: Dict[str, float] = {}
+    stock_caps.update(caps_area)
+    stock_caps.update(caps_hedge)
+    stock_caps.update(caps_water)
+
+    stock_bankkey: Dict[str, str] = {}
+    stock_bankkey.update(bk_area)
+    stock_bankkey.update(bk_hedge)
+    stock_bankkey.update(bk_water)
+
     if not options:
         raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
 
+    # ---- Map options to each demand row ----
     idx_by_dem: Dict[int, List[int]] = {}
     dem_need: Dict[int, float] = {}
     for di, drow in demand_df.iterrows():
@@ -1478,9 +1562,11 @@ def optimise(demand_df: pd.DataFrame,
             # Hard limit: <= 2 banks
             prob += pulp.lpSum([y[b] for b in bank_keys]) <= 2
 
+            # Link option selection to bank usage
             for i, opt in enumerate(options):
                 prob += z[i] <= y[opt["BANK_KEY"]]
 
+            # Exactly one option per demand; meet its units; bind x to z
             for di, idxs in idx_by_dem.items():
                 need = dem_need[di]
                 prob += pulp.lpSum([z[i] for i in idxs]) == 1
@@ -1488,6 +1574,7 @@ def optimise(demand_df: pd.DataFrame,
                 for i in idxs:
                     prob += x[i] <= need * z[i]
 
+            # Stock capacity constraints
             use_map: Dict[str, List[Tuple[int, float]]] = {}
             for i, opt in enumerate(options):
                 for sid, coef in opt["stock_use"].items():
@@ -1496,12 +1583,13 @@ def optimise(demand_df: pd.DataFrame,
                 cap = float(stock_caps.get(sid, 0.0))
                 prob += pulp.lpSum([coef * x[i] for (i, coef) in pairs]) <= cap
 
+            # Optional cost cap (for stage B)
             if cost_cap is not None:
                 prob += pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))]) <= cost_cap + 1e-9
 
             return prob, x, z, y
 
-        # Stage A: cost min
+        # Stage A: min cost
         probA, xA, zA, yA = build_problem(minimise_banks=False, cost_cap=None)
         probA.solve(pulp.PULP_CBC_CMD(msg=False))
         statusA = pulp.LpStatus[probA.status]
@@ -1538,7 +1626,7 @@ def optimise(demand_df: pd.DataFrame,
 
         allocA, costA = extract(xA, zA)
 
-        # Stage B: minimise #banks under +1% cap
+        # Stage B: minimise #banks under +1% cost cap
         probB, xB, zB, yB = build_problem(minimise_banks=True, cost_cap=(1.0 + SINGLE_BANK_SOFT_PCT) * best_cost)
         probB.solve(pulp.PULP_CBC_CMD(msg=False))
         statusB = pulp.LpStatus[probB.status]
@@ -1548,8 +1636,9 @@ def optimise(demand_df: pd.DataFrame,
 
             def bank_count(df):
                 return df["BANK_KEY"].nunique() if not df.empty else 0
+
             if bank_count(allocB) < bank_count(allocA):
-                # Stage C: re-min cost with banks fixed
+                # Stage C: re-min cost with chosen banks fixed
                 chosen_banks = list(allocB["BANK_KEY"].unique())
                 probC, xC, zC, yC = build_problem(minimise_banks=False, cost_cap=None)
                 for b in bank_keys:
@@ -1565,13 +1654,12 @@ def optimise(demand_df: pd.DataFrame,
         return allocA, costA, chosen_size
 
     except Exception:
-        # Greedy fallback
+        # ---- Greedy fallback (unchanged) ----
         caps = stock_caps.copy()
         used_banks: List[str] = []
 
         def bank_ok(b):
-            cand = set(used_banks)
-            cand.add(b)
+            cand = set(used_banks); cand.add(b)
             return len(cand) <= 2
 
         rows = []
@@ -1604,7 +1692,9 @@ def optimise(demand_df: pd.DataFrame,
 
             if best_i is None:
                 name = sstr(drow["habitat_name"])
-                raise RuntimeError(f"Greedy fallback infeasible for '{name}' (no single option covers need within caps and bank limit).")
+                raise RuntimeError(
+                    f"Greedy fallback infeasible for '{name}' (no single option covers need within caps and bank limit)."
+                )
 
             opt = options[best_i]
             bkey = opt["BANK_KEY"]
