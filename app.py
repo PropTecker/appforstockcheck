@@ -825,8 +825,8 @@ NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
 NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
 
 HAB_CHOICES = sorted(
-    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL]
-)
+    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
+) + [NET_GAIN_HEDGEROW_LABEL]  # Hedgerow Net Gain at end, not in catalog
 
 with st.container(border=True):
     st.markdown("**Add habitats one by one** (type to search the catalog):")
@@ -1089,6 +1089,10 @@ def prepare_options(demand_df: pd.DataFrame,
 
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
+        
+        # Skip hedgerow demand in area habitat options (hedgerows handled separately)
+        if is_hedgerow(dem_hab):
+            continue
 
         if dem_hab == NET_GAIN_LABEL:
             d_broader = ""
@@ -1812,9 +1816,9 @@ if run:
                 except Exception as e:
                     st.warning(f"Auto-locate failed: {e}. Proceeding with 'far' tiers only.")
 
-        # Validate against catalog — allow special Net Gain label
+        # Validate against catalog — allow special Net Gain labels
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h != NET_GAIN_LABEL]
+        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h not in [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL]]
         if unknown:
             st.error(f"These demand habitats aren't in the catalog: {unknown}")
             st.stop()
