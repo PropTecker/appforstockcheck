@@ -99,7 +99,11 @@ def norm_name(s: str) -> str:
     return t
 
 def is_hedgerow(name: str) -> bool:
-    return "hedgerow" in sstr(name).lower()
+    name_str = sstr(name)
+    # Check if it's the hedgerow net gain label
+    if name_str == "Net Gain (Hedgerows)":
+        return True
+    return "hedgerow" in name_str.lower()
 
 def is_watercourse(name: str) -> bool:
     name_lower = sstr(name).lower()
@@ -818,9 +822,10 @@ with st.container():
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
 NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
+NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
 
 HAB_CHOICES = sorted(
-    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
+    [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL]
 )
 
 with st.container(border=True):
@@ -852,7 +857,7 @@ with st.container(border=True):
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
         st.rerun()
 
-    cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
+    cc1, cc2, cc3, cc4 = st.columns([0.25, 0.25, 0.25, 0.25])
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
@@ -862,13 +867,21 @@ with st.container(border=True):
             st.rerun()
     with cc2:
         if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
-                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
+                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any area habitat)."):
             st.session_state.demand_rows.append(
                 {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
     with cc3:
+        if st.button("➕ Net Gain (Hedgerows)", key="add_ng_hedge_btn",
+                     help="Adds a 'Net Gain (Hedgerows)' line. Can be fulfilled using any hedgerow habitat credit."):
+            st.session_state.demand_rows.append(
+                {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_HEDGEROW_LABEL, "units": 0.0}
+            )
+            st.session_state._next_row_id += 1
+            st.rerun()
+    with cc4:
         if st.button("🧹 Clear all", key="clear_all_btn"):
             # Clear all rows - reset to empty state
             for row in st.session_state.demand_rows:
@@ -937,8 +950,8 @@ def enforce_hedgerow_rules(demand_row, supply_row, dist_levels_map_local) -> boo
     d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
     s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
     
-    # Net Gain can be covered by anything
-    if dh == NET_GAIN_LABEL:
+    # Net Gain (both regular and hedgerow) can be covered by anything
+    if dh == NET_GAIN_LABEL or dh == "Net Gain (Hedgerows)":
         return True
     
     # Very High - Same habitat required
@@ -1260,8 +1273,8 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
     for demand_idx, demand_row in demand_df.iterrows():
         dem_hab = sstr(demand_row.get("habitat_name"))
         
-        # Skip non-hedgerow demand
-        if not is_hedgerow(dem_hab) and dem_hab != NET_GAIN_LABEL:
+        # Skip non-hedgerow demand (but include hedgerow net gain)
+        if not is_hedgerow(dem_hab):
             continue
         
         demand_units = float(demand_row.get("units_required", 0.0))
@@ -1269,8 +1282,8 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
             continue
         
         # Get demand distinctiveness
-        if dem_hab == NET_GAIN_LABEL:
-            demand_dist = "Low"  # Net Gain trades like Low
+        if dem_hab == "Net Gain (Hedgerows)":
+            demand_dist = "Low"  # Hedgerow Net Gain trades like Low for hedgerows
             demand_broader = ""
         else:
             cat_match = Catalog[Catalog["habitat_name"] == dem_hab]
@@ -2023,6 +2036,9 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             if demand_habitat == NET_GAIN_LABEL:
                 demand_distinctiveness = "10% Net Gain"
                 demand_habitat_display = "Any"
+            elif demand_habitat == "Net Gain (Hedgerows)":
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any (Hedgerows)"
             else:
                 # Look up from catalog
                 cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
@@ -2058,7 +2074,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             }
             
             # Categorize by habitat type
-            if "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
+            if demand_habitat == "Net Gain (Hedgerows)" or "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
                 hedgerow_habitats.append(row_data)
             elif "watercourse" in demand_habitat.lower() or "water" in supply_habitat.lower():
                 watercourse_habitats.append(row_data)
@@ -2081,6 +2097,9 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             if habitat_lost == NET_GAIN_LABEL:
                 demand_distinctiveness = "10% Net Gain"
                 demand_habitat_display = "Any"
+            elif habitat_lost == "Net Gain (Hedgerows)":
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any (Hedgerows)"
             else:
                 cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_lost]
                 if not cat_match.empty:
@@ -2094,6 +2113,9 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             if habitat_name == NET_GAIN_LABEL:
                 supply_distinctiveness = "10% Net Gain"
                 supply_habitat_display = "Any"
+            elif habitat_name == "Net Gain (Hedgerows)":
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any (Hedgerows)"
             else:
                 cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
                 if not cat_match.empty:
@@ -2131,6 +2153,9 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             if habitat_lost == NET_GAIN_LABEL:
                 demand_distinctiveness = "10% Net Gain"
                 demand_habitat_display = "Any"
+            elif habitat_lost == "Net Gain (Hedgerows)":
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any (Hedgerows)"
             else:
                 cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_lost]
                 if not cat_match.empty:
@@ -2144,6 +2169,9 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             if habitat_name == NET_GAIN_LABEL:
                 supply_distinctiveness = "10% Net Gain"
                 supply_habitat_display = "Any"
+            elif habitat_name == "Net Gain (Hedgerows)":
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any (Hedgerows)"
             else:
                 cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
                 if not cat_match.empty:
