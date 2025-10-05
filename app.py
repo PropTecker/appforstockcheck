@@ -106,28 +106,32 @@ def is_watercourse(name: str) -> bool:
 
 def get_habitat_ledger(habitat_name: str, catalog_df: pd.DataFrame) -> str:
     """
-    Determine which ledger a habitat belongs to based on broader_type in catalog.
-    Returns: "Hedgerow", "Watercourse", or "Area" (default)
+    Determine which ledger a habitat belongs to based on UmbrellaType in catalog.
+    Returns: "Hedgerow", "Watercourse", or "Area Habitat" (exact match from catalog)
     """
     if habitat_name == NET_GAIN_LABEL:
-        return "Area"
+        return "Area Habitat"
     
     matches = catalog_df[catalog_df["habitat_name"] == habitat_name]
     if matches.empty:
-        # Fallback to name-based check
-        if is_hedgerow(habitat_name):
-            return "Hedgerow"
-        if is_watercourse(habitat_name):
-            return "Watercourse"
-        return "Area"
+        # Fallback to Area Habitat if not found in catalog
+        return "Area Habitat"
     
-    broader = sstr(matches["broader_type"].iloc[0]).lower()
-    if "hedgerow" in broader:
-        return "Hedgerow"
-    elif "watercourse" in broader or "water" in broader:
-        return "Watercourse"
-    else:
-        return "Area"
+    # Use UmbrellaType field - should be exactly "Area Habitat", "Hedgerow", or "Watercourse"
+    if "UmbrellaType" in matches.columns:
+        umbrella = sstr(matches["UmbrellaType"].iloc[0])
+        if umbrella:
+            return umbrella
+    
+    # Fallback to broader_type if UmbrellaType not available
+    if "broader_type" in matches.columns:
+        broader = sstr(matches["broader_type"].iloc[0]).lower()
+        if "hedgerow" in broader:
+            return "Hedgerow"
+        elif "watercourse" in broader or "water" in broader:
+            return "Watercourse"
+    
+    return "Area Habitat"
 
 # ================= Login =================
 DEFAULT_USER = "WC0323"
@@ -163,6 +167,17 @@ def require_login():
     st.stop()
 
 require_login()
+
+# ================= Start New Quote Button =================
+if st.button("🔄 Start New Quote", key="start_new_quote_btn", help="Clear all data and start fresh"):
+    # Reset all session state except auth
+    keys_to_keep = ["auth_ok"]
+    for key in list(st.session_state.keys()):
+        if key not in keys_to_keep:
+            del st.session_state[key]
+    # Reinitialize
+    init_session_state()
+    st.rerun()
 
 # ================= HTTP helpers =================
 def http_get(url, params=None, headers=None, timeout=25):
@@ -467,7 +482,7 @@ backend["Banks"] = make_bank_key_col(backend["Banks"], backend["Banks"])
 for sheet, cols in {
     "Pricing": ["bank_id","habitat_name","contract_size","tier"],
     "Stock": ["bank_id","habitat_name","stock_id","quantity_available"],
-    "HabitatCatalog": ["habitat_name","broader_type","distinctiveness_name"],
+    "HabitatCatalog": ["habitat_name","UmbrellaType","distinctiveness_name"],
 }.items():
     missing = [c for c in cols if c not in backend[sheet].columns]
     if missing:
@@ -942,7 +957,7 @@ def prepare_options(demand_df: pd.DataFrame,
 
     for df, cols in [
         (Banks, ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name","lat","lon","postcode","address"]),
-        (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
+        (Catalog, ["habitat_name","UmbrellaType","broader_type","distinctiveness_name"]),
         (Stock, ["habitat_name","stock_id","bank_id","quantity_available","bank_name","BANK_KEY"]),
         (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price","broader_type","distinctiveness_name","bank_name"]),
         (Trading, ["demand_habitat","allowed_supply_habitat","min_distinctiveness_name","companion_habitat"])
@@ -1560,14 +1575,6 @@ with st.expander("🧾 Price readout (normalised view the optimiser uses)", expa
                     )
             except Exception:
                 pass
-
-            csv_bytes = prn.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download pricing (normalised, this size) CSV",
-                data=csv_bytes,
-                file_name=f"pricing_normalised_{chosen_size}.csv",
-                mime="text/csv"
-            )
     except Exception as e:
         st.error(f"Price readout error: {e}")
 
@@ -1816,20 +1823,6 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
 
-        # Downloads
-        st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
-                           file_name="allocation.csv", mime="text/csv")
-        st.download_button("Download site/habitat totals (CSV)",
-                           data=df_to_csv_bytes(site_hab_totals),
-                           file_name="site_habitat_totals_effective_units.csv",
-                           mime="text/csv")
-        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
-                           file_name="allocation_by_bank.csv", mime="text/csv")
-        st.download_button("Download by habitat (CSV)", data=df_to_csv_bytes(by_hab),
-                           file_name="allocation_by_habitat.csv", mime="text/csv")
-        st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
-                           file_name="order_summary.csv", mime="text/csv")
-        
         # ========== MAP UPDATE NOTICE (NO RERUN) ==========
         st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
 
@@ -2125,11 +2118,11 @@ if (st.session_state.get("optimization_complete", False) and
     
     # Initialize email inputs in session state (only if not exists)
     if "email_client_name" not in st.session_state:
-        st.session_state.email_client_name = "INSERT NAME"
+        st.session_state.email_client_name = ""
     if "email_ref_number" not in st.session_state:
-        st.session_state.email_ref_number = "BNG00XXX"
+        st.session_state.email_ref_number = ""
     if "email_location" not in st.session_state:
-        st.session_state.email_location = "INSERT LOCATION"
+        st.session_state.email_location = ""
     
     with st.expander("Generate Client Email Report", expanded=True):  # Force it to stay expanded
         st.markdown("**Generate a client-facing report table and email:**")
@@ -2204,14 +2197,9 @@ if (st.session_state.get("optimization_complete", False) and
         # Enhanced email generation with .eml file creation and improved mailto options:
 st.markdown("**📧 Email Generation:**")
 
-col1, col2, col3 = st.columns([1, 1, 1])
+col1, col2 = st.columns([1, 1])
 
 with col1:
-    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-        st.code(email_html, language="html")
-        st.success("Email HTML generated! Copy the code above and paste into your email client.")
-
-with col2:
     # Create .eml file content
     import base64
     from email.mime.multipart import MIMEMultipart
@@ -2263,20 +2251,8 @@ Wild Capital Team"""
     
     msg.attach(text_part)
     msg.attach(html_part)
-    
-    # Convert to string
-    eml_content = msg.as_string()
-    
-    # Download button for .eml file
-    st.download_button(
-        "📧 Download Email (.eml)",
-        data=eml_content,
-        file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-        mime="message/rfc822",
-        help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-    )
 
-with col3:
+with col2:
     # Enhanced mailto with HTML formatting attempts
     import urllib.parse
     
@@ -2376,26 +2352,6 @@ If you have any questions, please reply to this email or call 01962 436574.
 Best regards,
 Wild Capital Team"""
     
-    encoded_formatted_body = urllib.parse.quote(formatted_text_body)
-    
-    # Create multiple options
-    st.markdown("**📧 Quick Email Options:**")
-    
-    # Option 1: Formatted text version (most reliable)
-    mailto_formatted = f"mailto:?subject={encoded_subject}&body={encoded_formatted_body}"
-    st.markdown(f"[📧 Rich Text Email]({mailto_formatted})")
-    st.caption("Formatted text version with table layout")
-    
-    # Option 2: Try HTML (works in some clients)
-    mailto_html = f"mailto:?subject={encoded_subject}&body={encoded_html_body}"
-    st.markdown(f"[📧 HTML Email (experimental)]({mailto_html})")
-    st.caption("May work in some email clients")
-    
-    # Option 3: Simple version (fallback)
-    simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}%0D%0A%0D%0APlease see attached detailed breakdown."
-    mailto_simple = f"mailto:?subject={encoded_subject}&body={simple_body}"
-    st.markdown(f"[📧 Simple Email]({mailto_simple})")
-    st.caption("Basic version for maximum compatibility")
             
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
