@@ -69,7 +69,11 @@ def init_session_state():
         "bank_catchment_geo": {},
         "demand_rows": [{"id": 1, "habitat_name": "", "units": 0.0}],
         "_next_row_id": 2,
-        "optimization_complete": False
+        "optimization_complete": False,
+        "manual_hedgerow_rows": [],
+        "manual_watercourse_rows": [],
+        "_next_manual_hedgerow_id": 1,
+        "_next_manual_watercourse_id": 1
     }
     
     for key, value in defaults.items():
@@ -96,6 +100,20 @@ def norm_name(s: str) -> str:
 
 def is_hedgerow(name: str) -> bool:
     return "hedgerow" in sstr(name).lower()
+
+def is_watercourse(name: str) -> bool:
+    name_lower = sstr(name).lower()
+    return "watercourse" in name_lower or "water" in name_lower
+
+def get_hedgerow_habitats(catalog_df: pd.DataFrame) -> List[str]:
+    """Get list of hedgerow habitats from catalog"""
+    all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
+    return sorted([h for h in all_habitats if is_hedgerow(h)])
+
+def get_watercourse_habitats(catalog_df: pd.DataFrame) -> List[str]:
+    """Get list of watercourse habitats from catalog"""
+    all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
+    return sorted([h for h in all_habitats if is_watercourse(h)])
 
 # ================= Login =================
 DEFAULT_USER = "WC0323"
@@ -1780,6 +1798,117 @@ if run:
         
         # ========== MAP UPDATE NOTICE (NO RERUN) ==========
         st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
+        
+        # ========== MANUAL HEDGEROW/WATERCOURSE ENTRIES ==========
+        st.markdown("---")
+        st.markdown("#### ➕ Manual Additions (Hedgerow & Watercourse)")
+        st.info("Add additional hedgerow or watercourse units to your quote. These will be included in the final client report.")
+        
+        # Get available habitats
+        hedgerow_choices = get_hedgerow_habitats(backend["HabitatCatalog"])
+        watercourse_choices = get_watercourse_habitats(backend["HabitatCatalog"])
+        
+        # Hedgerow Section
+        with st.expander("🌿 Manual Hedgerow Units", expanded=False):
+            st.markdown("**Add hedgerow habitat entries:**")
+            
+            to_delete_hedgerow = []
+            for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
+                c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
+                with c1:
+                    if hedgerow_choices:
+                        st.session_state.manual_hedgerow_rows[idx]["habitat_name"] = st.selectbox(
+                            "Habitat", hedgerow_choices,
+                            index=(hedgerow_choices.index(row["habitat_name"]) if row["habitat_name"] in hedgerow_choices else 0),
+                            key=f"manual_hedge_hab_{row['id']}",
+                            help="Select hedgerow habitat"
+                        )
+                    else:
+                        st.warning("No hedgerow habitats available in catalog")
+                with c2:
+                    st.session_state.manual_hedgerow_rows[idx]["units"] = st.number_input(
+                        "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), 
+                        key=f"manual_hedge_units_{row['id']}"
+                    )
+                with c3:
+                    st.session_state.manual_hedgerow_rows[idx]["price_per_unit"] = st.number_input(
+                        "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
+                        key=f"manual_hedge_price_{row['id']}"
+                    )
+                with c4:
+                    if st.button("🗑️", key=f"del_manual_hedge_{row['id']}", help="Remove this row"):
+                        to_delete_hedgerow.append(row["id"])
+            
+            if to_delete_hedgerow:
+                st.session_state.manual_hedgerow_rows = [r for r in st.session_state.manual_hedgerow_rows if r["id"] not in to_delete_hedgerow]
+                st.rerun()
+            
+            col1, col2 = st.columns([0.5, 0.5])
+            with col1:
+                if st.button("➕ Add Hedgerow Entry", key="add_manual_hedge_btn"):
+                    st.session_state.manual_hedgerow_rows.append({
+                        "id": st.session_state._next_manual_hedgerow_id,
+                        "habitat_name": hedgerow_choices[0] if hedgerow_choices else "",
+                        "units": 0.0,
+                        "price_per_unit": 0.0
+                    })
+                    st.session_state._next_manual_hedgerow_id += 1
+                    st.rerun()
+            with col2:
+                if st.button("🧹 Clear Hedgerow", key="clear_manual_hedge_btn"):
+                    st.session_state.manual_hedgerow_rows = []
+                    st.rerun()
+        
+        # Watercourse Section
+        with st.expander("💧 Manual Watercourse Units", expanded=False):
+            st.markdown("**Add watercourse habitat entries:**")
+            
+            to_delete_watercourse = []
+            for idx, row in enumerate(st.session_state.manual_watercourse_rows):
+                c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
+                with c1:
+                    if watercourse_choices:
+                        st.session_state.manual_watercourse_rows[idx]["habitat_name"] = st.selectbox(
+                            "Habitat", watercourse_choices,
+                            index=(watercourse_choices.index(row["habitat_name"]) if row["habitat_name"] in watercourse_choices else 0),
+                            key=f"manual_water_hab_{row['id']}",
+                            help="Select watercourse habitat"
+                        )
+                    else:
+                        st.warning("No watercourse habitats available in catalog")
+                with c2:
+                    st.session_state.manual_watercourse_rows[idx]["units"] = st.number_input(
+                        "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)),
+                        key=f"manual_water_units_{row['id']}"
+                    )
+                with c3:
+                    st.session_state.manual_watercourse_rows[idx]["price_per_unit"] = st.number_input(
+                        "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
+                        key=f"manual_water_price_{row['id']}"
+                    )
+                with c4:
+                    if st.button("🗑️", key=f"del_manual_water_{row['id']}", help="Remove this row"):
+                        to_delete_watercourse.append(row["id"])
+            
+            if to_delete_watercourse:
+                st.session_state.manual_watercourse_rows = [r for r in st.session_state.manual_watercourse_rows if r["id"] not in to_delete_watercourse]
+                st.rerun()
+            
+            col1, col2 = st.columns([0.5, 0.5])
+            with col1:
+                if st.button("➕ Add Watercourse Entry", key="add_manual_water_btn"):
+                    st.session_state.manual_watercourse_rows.append({
+                        "id": st.session_state._next_manual_watercourse_id,
+                        "habitat_name": watercourse_choices[0] if watercourse_choices else "",
+                        "units": 0.0,
+                        "price_per_unit": 0.0
+                    })
+                    st.session_state._next_manual_watercourse_id += 1
+                    st.rerun()
+            with col2:
+                if st.button("🧹 Clear Watercourse", key="clear_manual_water_btn"):
+                    st.session_state.manual_watercourse_rows = []
+                    st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
@@ -1790,8 +1919,15 @@ if run:
 
 # ================= Fixed Email Report Generation Function =================
 def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
-                                       client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
+                                       client_name: str, ref_number: str, location: str,
+                                       manual_hedgerow_rows: List[dict] = None,
+                                       manual_watercourse_rows: List[dict] = None) -> Tuple[pd.DataFrame, str]:
     """Generate the client-facing report table and email body matching exact template with improved styling"""
+    
+    if manual_hedgerow_rows is None:
+        manual_hedgerow_rows = []
+    if manual_watercourse_rows is None:
+        manual_watercourse_rows = []
     
     # Separate by habitat types
     area_habitats = []
@@ -1856,7 +1992,69 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             else:
                 area_habitats.append(row_data)
     
-    total_with_admin = total_cost + admin_fee
+    # Process manual hedgerow entries
+    manual_hedgerow_cost = 0.0
+    for row in manual_hedgerow_rows:
+        habitat_name = sstr(row.get("habitat_name", ""))
+        units = float(row.get("units", 0.0) or 0.0)
+        price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
+        
+        if habitat_name and units > 0:
+            offset_cost = units * price_per_unit
+            manual_hedgerow_cost += offset_cost
+            
+            # Get distinctiveness from catalog
+            cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
+            if not cat_match.empty:
+                distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+            else:
+                distinctiveness = "Medium"
+            
+            row_data = {
+                "Distinctiveness": distinctiveness,
+                "Habitats Lost": habitat_name,
+                "# Units": f"{units:.2f}",
+                "Distinctiveness_Supply": distinctiveness,
+                "Habitats Supplied": habitat_name,
+                "# Units_Supply": f"{units:.2f}",
+                "Price Per Unit": f"£{price_per_unit:,.0f}",
+                "Offset Cost": f"£{offset_cost:,.0f}"
+            }
+            hedgerow_habitats.append(row_data)
+    
+    # Process manual watercourse entries
+    manual_watercourse_cost = 0.0
+    for row in manual_watercourse_rows:
+        habitat_name = sstr(row.get("habitat_name", ""))
+        units = float(row.get("units", 0.0) or 0.0)
+        price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
+        
+        if habitat_name and units > 0:
+            offset_cost = units * price_per_unit
+            manual_watercourse_cost += offset_cost
+            
+            # Get distinctiveness from catalog
+            cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
+            if not cat_match.empty:
+                distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+            else:
+                distinctiveness = "Medium"
+            
+            row_data = {
+                "Distinctiveness": distinctiveness,
+                "Habitats Lost": habitat_name,
+                "# Units": f"{units:.2f}",
+                "Distinctiveness_Supply": distinctiveness,
+                "Habitats Supplied": habitat_name,
+                "# Units_Supply": f"{units:.2f}",
+                "Price Per Unit": f"£{price_per_unit:,.0f}",
+                "Offset Cost": f"£{offset_cost:,.0f}"
+            }
+            watercourse_habitats.append(row_data)
+    
+    # Update total cost to include manual entries
+    total_cost_with_manual = total_cost + manual_hedgerow_cost + manual_watercourse_cost
+    total_with_admin = total_cost_with_manual + admin_fee
     
     # Build HTML table with improved styling (30% narrower, better colors)
     html_table = """
@@ -1962,6 +2160,23 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
         </tr>
     """
     
+    # Calculate total units including manual entries
+    total_demand_units = demand_df['units_required'].sum()
+    total_supply_units = alloc_df['units_supplied'].sum()
+    
+    # Add manual units
+    for row in manual_hedgerow_rows:
+        units = float(row.get("units", 0.0) or 0.0)
+        if units > 0:
+            total_demand_units += units
+            total_supply_units += units
+    
+    for row in manual_watercourse_rows:
+        units = float(row.get("units", 0.0) or 0.0)
+        if units > 0:
+            total_demand_units += units
+            total_supply_units += units
+    
     # Add Planning Discharge Pack and Total
     html_table += f"""
         <tr>
@@ -1971,10 +2186,10 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
         <tr style="background-color: #f0f0f0; font-weight: bold;">
             <td style="padding: 6px; border: 1px solid #000;">Total</td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
-            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{demand_df['units_required'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{total_demand_units:.2f}</td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
-            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{alloc_df['units_supplied'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{total_supply_units:.2f}</td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
             <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{total_with_admin:,.0f}</td>
         </tr>
@@ -2127,7 +2342,9 @@ if (st.session_state.get("optimization_complete", False) and
         # Generate the report using session data and input values
         client_table, email_html = generate_client_report_table_fixed(
             session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-            client_name, ref_number, location
+            client_name, ref_number, location,
+            st.session_state.manual_hedgerow_rows,
+            st.session_state.manual_watercourse_rows
         )
         
         # Display the table
