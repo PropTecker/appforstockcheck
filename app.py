@@ -29,7 +29,11 @@ ADMIN_FEE_GBP = 500.0
 SINGLE_BANK_SOFT_PCT = 0.01
 MAP_CATCHMENT_ALPHA = 0.03
 UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}
+LEDGER_AREA = "area"
+LEDGER_HEDGE = "hedgerow"
+LEDGER_WATER = "watercourse"
 
+NET_GAIN_WATERCOURSE_LABEL = "Net Gain (Watercourses)"  # new
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
 NCA_URL = ("https://services.arcgis.com/JJzESW51TqeY9uat/arcgis/rest/services/"
@@ -257,12 +261,6 @@ def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weig
         pass
 
 # --- Ledger helpers ---
-LEDGER_AREA = "area"
-LEDGER_HEDGE = "hedgerow"
-LEDGER_WATER = "watercourse"
-
-NET_GAIN_WATERCOURSE_LABEL = "Net Gain (Watercourses)"  # new
-
 def get_umbrella_for(hab_name: str, catalog: pd.DataFrame) -> str:
     """Return 'hedgerow' | 'watercourse' | 'area' for a habitat name using UmbrellaType; 
        also handles special Net Gain labels."""
@@ -975,32 +973,6 @@ else:
     st.info("Add at least one habitat and units to continue.", icon="ℹ️")
 
 # ================= Legality =================
-def enforce_watercourse_rules(demand_row, supply_row, dist_levels_map_local) -> bool:
-    """
-    Watercourse trading rules (mirrors hedgerow approach until you specify otherwise):
-    - Very High: Same habitat required
-    - High: Like for like or better (same habitat or higher distinctiveness)
-    - Medium, Low, Very Low: Same distinctiveness or better
-    - Net Gain (Watercourses): Anything within watercourse ledger
-    """
-    dh = sstr(demand_row.get("habitat_name"))
-    sh = sstr(supply_row.get("habitat_name"))
-    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
-    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
-    d_key = d_dist_name.lower()
-    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
-    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
-
-    if dh == NET_GAIN_WATERCOURSE_LABEL:
-        return True
-    if d_key in ["very high", "v.high"]:
-        return sh == dh
-    if d_key == "high":
-        return (sh == dh) or (s_val > d_val)
-    if d_key in ["medium", "low", "very low", "v.low"]:
-        return s_val >= d_val
-    return True
-
 
 def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
     if explicit_rule:
@@ -1060,6 +1032,32 @@ def enforce_hedgerow_rules(demand_row, supply_row, dist_levels_map_local) -> boo
         return s_val >= d_val
     
     # Default: allow it
+    return True
+
+def enforce_watercourse_rules(demand_row, supply_row, dist_levels_map_local) -> bool:
+    """
+    Watercourse trading rules (mirrors hedgerow approach until you specify otherwise):
+    - Very High: Same habitat required
+    - High: Like for like or better (same habitat or higher distinctiveness)
+    - Medium, Low, Very Low: Same distinctiveness or better
+    - Net Gain (Watercourses): Anything within watercourse ledger
+    """
+    dh = sstr(demand_row.get("habitat_name"))
+    sh = sstr(supply_row.get("habitat_name"))
+    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
+    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
+    d_key = d_dist_name.lower()
+    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
+    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
+
+    if dh == NET_GAIN_WATERCOURSE_LABEL:
+        return True
+    if d_key in ["very high", "v.high"]:
+        return sh == dh
+    if d_key == "high":
+        return (sh == dh) or (s_val > d_val)
+    if d_key in ["medium", "low", "very low", "v.low"]:
+        return s_val >= d_val
     return True
 
 # ================= Options builder =================
@@ -1467,6 +1465,152 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
             stock_bankkey[stock_id] = bank_key
     
     return options, stock_caps, stock_bankkey
+
+# --- Watercourse options builder (ledger-scoped) ---
+def prepare_watercourse_options(demand_df: pd.DataFrame,
+                                chosen_size: str,
+                                target_lpa: str, target_nca: str,
+                                lpa_neigh: List[str], nca_neigh: List[str],
+                                lpa_neigh_norm: List[str], nca_neigh_norm: List[str]
+                                ) -> Tuple[List[dict], Dict[str, float], Dict[str, str]]:
+    """Build candidate options for watercourse ledger using UmbrellaType='watercourse'."""
+    Banks = backend["Banks"].copy()
+    Pricing = backend["Pricing"].copy()
+    Catalog = backend["HabitatCatalog"].copy()
+    Stock = backend["Stock"].copy()
+
+    # Normalise strings
+    for df, cols in [
+        (Banks,   ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name"]),
+        (Catalog, ["habitat_name","broader_type","distinctiveness_name","UmbrellaType"]),
+        (Stock,   ["habitat_name","stock_id","bank_id","quantity_available","BANK_KEY"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price"])
+    ]:
+        if not df.empty:
+            for c in cols:
+                if c in df.columns:
+                    df[c] = df[c].map(sstr)
+
+    # Ensure BANK_KEY exists on Stock
+    Stock = make_bank_key_col(Stock, Banks)
+
+    # Keep only watercourse habitats by UmbrellaType
+    wc_catalog = Catalog[Catalog["UmbrellaType"].astype(str).str.lower() == "watercourse"]
+    wc_habs = set(wc_catalog["habitat_name"].astype(str))
+
+    stock_full = (
+        Stock[Stock["habitat_name"].isin(wc_habs)]
+        .merge(Banks[["bank_id","bank_name","lpa_name","nca_name"]].drop_duplicates(),
+               on="bank_id", how="left")
+        .merge(Catalog[["habitat_name","broader_type","distinctiveness_name","UmbrellaType"]],
+               on="habitat_name", how="left")
+    )
+
+    pricing_enriched = (
+        Pricing[(Pricing["contract_size"] == chosen_size) & (Pricing["habitat_name"].isin(wc_habs))]
+        .merge(Catalog[["habitat_name","broader_type","distinctiveness_name","UmbrellaType"]],
+               on="habitat_name", how="left")
+    )
+
+    options: List[dict] = []
+    stock_caps: Dict[str, float] = {}
+    stock_bankkey: Dict[str, str] = {}
+
+    for demand_idx, demand_row in demand_df.iterrows():
+        dem_hab = sstr(demand_row.get("habitat_name"))
+
+        # Only handle watercourse demands (including NG watercourses)
+        # Uses UmbrellaType to decide ledger
+        if "UmbrellaType" in Catalog.columns:
+            if dem_hab != NET_GAIN_WATERCOURSE_LABEL:
+                m = Catalog[Catalog["habitat_name"].astype(str).str.strip() == dem_hab]
+                umb = sstr(m.iloc[0]["UmbrellaType"]).lower() if not m.empty else ""
+                if umb != "watercourse":
+                    continue
+        else:
+            # Fallback: text heuristic (not ideal, but keeps behavior if column is missing)
+            if dem_hab != NET_GAIN_WATERCOURSE_LABEL and not is_watercourse(dem_hab):
+                continue
+
+        demand_units = float(demand_row.get("units_required", 0.0))
+        if demand_units <= 0:
+            continue
+
+        if dem_hab == NET_GAIN_WATERCOURSE_LABEL:
+            demand_dist = "Low"     # NG trades like Low within this ledger
+            demand_broader = ""
+        else:
+            cat_match = Catalog[Catalog["habitat_name"] == dem_hab]
+            if cat_match.empty:
+                continue
+            demand_dist = sstr(cat_match.iloc[0]["distinctiveness_name"])
+            demand_broader = sstr(cat_match.iloc[0]["broader_type"])
+
+        demand_cat_row = pd.Series({
+            "habitat_name": dem_hab,
+            "distinctiveness_name": demand_dist,
+            "broader_type": demand_broader
+        })
+
+        for _, supply_row in stock_full.iterrows():
+            supply_hab = sstr(supply_row["habitat_name"])
+            if supply_hab not in wc_habs:
+                continue
+
+            # Ledger-specific rule check
+            if not enforce_watercourse_rules(demand_cat_row, supply_row, dist_levels_map):
+                continue
+
+            bank_key = sstr(supply_row["BANK_KEY"])
+            stock_id = sstr(supply_row["stock_id"])
+            qty_avail = float(supply_row.get("quantity_available", 0.0))
+            if qty_avail <= 0:
+                continue
+
+            tier = tier_for_bank(
+                sstr(supply_row.get("lpa_name")), sstr(supply_row.get("nca_name")),
+                target_lpa, target_nca,
+                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+            )
+
+            # Find exact price, else fallback to any watercourse price in same bank/tier
+            pr_match = pricing_enriched[
+                (pricing_enriched["BANK_KEY"] == bank_key) &
+                (pricing_enriched["tier"] == tier) &
+                (pricing_enriched["habitat_name"] == supply_hab)
+            ]
+            if pr_match.empty:
+                pr_match = pricing_enriched[
+                    (pricing_enriched["BANK_KEY"] == bank_key) &
+                    (pricing_enriched["tier"] == tier)
+                ]
+                if pr_match.empty:
+                    continue
+                price = float(pr_match.iloc[0]["price"])
+            else:
+                price = float(pr_match.iloc[0]["price"])
+
+            options.append({
+                "demand_idx": demand_idx,
+                "demand_habitat": dem_hab,
+                "supply_habitat": supply_hab,
+                "bank_id": sstr(supply_row["bank_id"]),
+                "bank_name": sstr(supply_row["bank_name"]),
+                "BANK_KEY": bank_key,
+                "stock_id": stock_id,
+                "tier": tier,
+                "unit_price": price,
+                "cost_per_unit": price,
+                "stock_use": {stock_id: 1.0},
+                "type": "normal",
+                "proximity": tier,
+            })
+
+            stock_caps[stock_id] = qty_avail
+            stock_bankkey[stock_id] = bank_key
+
+    return options, stock_caps, stock_bankkey
+
 
 # ================= Optimiser =================
 def optimise(demand_df: pd.DataFrame,
