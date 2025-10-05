@@ -1203,7 +1203,8 @@ def optimise(demand_df: pd.DataFrame,
         lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
     )
     if not options:
-        raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
+        raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers. "
+                          "Ensure supply habitats exist in the same ledger (Area/Hedgerow/Watercourse) as demand.")
 
     idx_by_dem: Dict[int, List[int]] = {}
     dem_need: Dict[int, float] = {}
@@ -1217,7 +1218,8 @@ def optimise(demand_df: pd.DataFrame,
     bad = [di for di, idxs in idx_by_dem.items() if len(idxs) == 0]
     if bad:
         names = [sstr(demand_df.iloc[di]["habitat_name"]) for di in bad]
-        raise RuntimeError("No legal options for: " + ", ".join(names))
+        raise RuntimeError("No legal options for: " + ", ".join(names) + 
+                          ". Check that supply habitats exist in the same ledger (Area/Hedgerow/Watercourse).")
 
     bank_keys = sorted({opt["BANK_KEY"] for opt in options})
 
@@ -1295,7 +1297,7 @@ def optimise(demand_df: pd.DataFrame,
                         "bank_name": opt.get("bank_name",""),
                         "bank_id": opt.get("bank_id",""),
                         "supply_habitat": opt["supply_habitat"],
-                        "allocation_type": opt["type"],
+                        "allocation_type": opt.get("type", "normal"),
                         "tier": opt["tier"],
                         "units_supplied": qty,
                         "unit_price": opt["unit_price"],
@@ -1392,7 +1394,7 @@ def optimise(demand_df: pd.DataFrame,
                 "bank_name": opt.get("bank_name",""),
                 "bank_id": opt.get("bank_id",""),
                 "supply_habitat": opt["supply_habitat"],
-                "allocation_type": opt["type"],
+                "allocation_type": opt.get("type", "normal"),
                 "tier": opt["tier"],
                 "units_supplied": need,
                 "unit_price": opt["unit_price"],
