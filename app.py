@@ -884,15 +884,14 @@ demand_df = pd.DataFrame(
      for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
 )
 
-# Hedgerow guard
-if not demand_df.empty:
-    banned = [h for h in demand_df["habitat_name"] if is_hedgerow(h)]
-    if banned:
-        st.error("Hedgerow units cannot be traded in this optimiser. Remove these line(s): " + ", ".join(sorted(set(banned))))
-        st.stop()
-
+# Display demand (hedgerow units are now supported)
 if not demand_df.empty:
     st.dataframe(demand_df, use_container_width=True, hide_index=True)
+    
+    # Show info if hedgerow units are included
+    hedgerow_units = [h for h in demand_df["habitat_name"] if is_hedgerow(h)]
+    if hedgerow_units:
+        st.info(f"ℹ️ Hedgerow units detected: {', '.join(sorted(set(hedgerow_units)))}. These will be optimized using hedgerow-specific trading rules.")
 else:
     st.info("Add at least one habitat and units to continue.", icon="ℹ️")
 
@@ -919,6 +918,43 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
         higher_distinctiveness = (s_val > d_val)
         return bool(same_group or higher_distinctiveness)
     return sh == dh  # High / Very High exactly like-for-like
+
+def enforce_hedgerow_rules(demand_row, supply_row, dist_levels_map_local) -> bool:
+    """
+    Hedgerow trading rules:
+    - Very High: Same habitat required
+    - High: Like for like or better
+    - Medium: Same distinctiveness or better habitat required
+    - Low: Same distinctiveness or better habitat required
+    - Very Low: Same distinctiveness or better habitat required
+    - Net Gain: Can be covered using anything
+    """
+    dh = sstr(demand_row.get("habitat_name"))
+    sh = sstr(supply_row.get("habitat_name"))
+    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
+    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
+    d_key = d_dist_name.lower()
+    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
+    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
+    
+    # Net Gain can be covered by anything
+    if dh == NET_GAIN_LABEL:
+        return True
+    
+    # Very High - Same habitat required
+    if d_key in ["very high", "v.high"]:
+        return sh == dh
+    
+    # High - Like for like or better (same habitat or higher distinctiveness)
+    if d_key == "high":
+        return (sh == dh) or (s_val > d_val)
+    
+    # Medium, Low, Very Low - Same distinctiveness or better
+    if d_key in ["medium", "low", "very low", "v.low"]:
+        return s_val >= d_val
+    
+    # Default: allow it
+    return True
 
 # ================= Options builder =================
 def select_size_for_demand(demand_df: pd.DataFrame, pricing_df: pd.DataFrame) -> str:
@@ -1179,16 +1215,159 @@ def prepare_options(demand_df: pd.DataFrame,
 
     return options, stock_caps, stock_bankkey
 
+def prepare_hedgerow_options(demand_df: pd.DataFrame,
+                              chosen_size: str,
+                              target_lpa: str, target_nca: str,
+                              lpa_neigh: List[str], nca_neigh: List[str],
+                              lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[List[dict], Dict[str, float], Dict[str, str]]:
+    """Prepare hedgerow unit options using specific hedgerow trading rules"""
+    Banks = backend["Banks"].copy()
+    Pricing = backend["Pricing"].copy()
+    Catalog = backend["HabitatCatalog"].copy()
+    Stock = backend["Stock"].copy()
+    
+    for df, cols in [
+        (Banks, ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name"]),
+        (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
+        (Stock, ["habitat_name","stock_id","bank_id","quantity_available"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price"])
+    ]:
+        if not df.empty:
+            for c in cols:
+                if c in df.columns:
+                    df[c] = df[c].map(sstr)
+    
+    Stock = make_bank_key_col(Stock, Banks)
+    
+    # Filter for ONLY hedgerow habitats
+    stock_full = Stock.merge(
+        Banks[["bank_id","bank_name","lpa_name","nca_name"]],
+        on="bank_id", how="left"
+    ).merge(Catalog, on="habitat_name", how="left")
+    stock_full = stock_full[stock_full["habitat_name"].map(is_hedgerow)].copy()
+    
+    pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
+    pricing_enriched = pricing_cs.merge(
+        Catalog[["habitat_name","broader_type","distinctiveness_name"]],
+        on="habitat_name", how="left"
+    )
+    pricing_enriched = pricing_enriched[pricing_enriched["habitat_name"].map(is_hedgerow)].copy()
+    
+    options = []
+    stock_caps = {}
+    stock_bankkey = {}
+    
+    for demand_idx, demand_row in demand_df.iterrows():
+        dem_hab = sstr(demand_row.get("habitat_name"))
+        
+        # Skip non-hedgerow demand
+        if not is_hedgerow(dem_hab) and dem_hab != NET_GAIN_LABEL:
+            continue
+        
+        demand_units = float(demand_row.get("units_required", 0.0))
+        if demand_units <= 0:
+            continue
+        
+        # Get demand distinctiveness
+        if dem_hab == NET_GAIN_LABEL:
+            demand_dist = "Low"  # Net Gain trades like Low
+            demand_broader = ""
+        else:
+            cat_match = Catalog[Catalog["habitat_name"] == dem_hab]
+            if cat_match.empty:
+                continue
+            demand_dist = sstr(cat_match.iloc[0]["distinctiveness_name"])
+            demand_broader = sstr(cat_match.iloc[0]["broader_type"])
+        
+        demand_cat_row = pd.Series({
+            "habitat_name": dem_hab,
+            "distinctiveness_name": demand_dist,
+            "broader_type": demand_broader
+        })
+        
+        # Find all eligible supply habitats
+        for _, supply_row in stock_full.iterrows():
+            supply_hab = sstr(supply_row["habitat_name"])
+            
+            # Check hedgerow trading rules
+            if not enforce_hedgerow_rules(demand_cat_row, supply_row, dist_levels_map):
+                continue
+            
+            bank_key = sstr(supply_row["BANK_KEY"])
+            stock_id = sstr(supply_row["stock_id"])
+            qty_avail = float(supply_row.get("quantity_available", 0.0))
+            
+            if qty_avail <= 0:
+                continue
+            
+            tier = tier_for_bank(
+                sstr(supply_row.get("lpa_name")), sstr(supply_row.get("nca_name")),
+                target_lpa, target_nca,
+                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+            )
+            
+            # Find price
+            pr_match = pricing_enriched[
+                (pricing_enriched["BANK_KEY"] == bank_key) &
+                (pricing_enriched["tier"] == tier) &
+                (pricing_enriched["habitat_name"] == supply_hab)
+            ]
+            
+            if pr_match.empty:
+                # Try to find any price for this bank/tier as fallback
+                pr_match = pricing_enriched[
+                    (pricing_enriched["BANK_KEY"] == bank_key) &
+                    (pricing_enriched["tier"] == tier)
+                ]
+                if pr_match.empty:
+                    continue
+                price = float(pr_match.iloc[0]["price"])
+            else:
+                price = float(pr_match.iloc[0]["price"])
+            
+            options.append({
+                "demand_idx": demand_idx,
+                "demand_habitat": dem_hab,
+                "supply_habitat": supply_hab,
+                "bank_id": sstr(supply_row["bank_id"]),
+                "bank_name": sstr(supply_row["bank_name"]),
+                "BANK_KEY": bank_key,
+                "stock_id": stock_id,
+                "tier": tier,
+                "unit_price": price,
+                "cost_per_unit": price
+            })
+            
+            stock_caps[stock_id] = qty_avail
+            stock_bankkey[stock_id] = bank_key
+    
+    return options, stock_caps, stock_bankkey
+
 # ================= Optimiser =================
 def optimise(demand_df: pd.DataFrame,
              target_lpa: str, target_nca: str,
              lpa_neigh: List[str], nca_neigh: List[str],
              lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[pd.DataFrame, float, str]:
+    
     chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
+    
+    # Prepare options for area habitats (non-hedgerow)
     options, stock_caps, stock_bankkey = prepare_options(
         demand_df, chosen_size, target_lpa, target_nca,
         lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
     )
+    
+    # Prepare options for hedgerow habitats
+    hedgerow_options, hedgerow_stock_caps, hedgerow_stock_bankkey = prepare_hedgerow_options(
+        demand_df, chosen_size, target_lpa, target_nca,
+        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+    )
+    
+    # Combine options (both use same demand_df indices)
+    options.extend(hedgerow_options)
+    stock_caps.update(hedgerow_stock_caps)
+    stock_bankkey.update(hedgerow_stock_bankkey)
+    
     if not options:
         raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
 
@@ -2059,6 +2238,32 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     area_habitats = bundle_low_and_net_gain(area_habitats)
     hedgerow_habitats = bundle_low_and_net_gain(hedgerow_habitats)
     watercourse_habitats = bundle_low_and_net_gain(watercourse_habitats)
+    
+    # Sort habitats by distinctiveness priority (High > Medium > Low + Net Gain > Very Low)
+    def sort_by_distinctiveness(habitats_list):
+        """Sort habitat rows by distinctiveness priority"""
+        distinctiveness_order = {
+            "Very High": 0,
+            "V.High": 0,
+            "High": 1,
+            "Medium": 2,
+            "Low + 10% Net Gain": 3,
+            "Low": 4,
+            "10% Net Gain": 5,
+            "Very Low": 6,
+            "V.Low": 6
+        }
+        
+        def get_sort_key(row):
+            dist = row.get("Distinctiveness", "")
+            return distinctiveness_order.get(dist, 99)  # Unknown distinctiveness goes to end
+        
+        return sorted(habitats_list, key=get_sort_key)
+    
+    # Apply sorting to each habitat type
+    area_habitats = sort_by_distinctiveness(area_habitats)
+    hedgerow_habitats = sort_by_distinctiveness(hedgerow_habitats)
+    watercourse_habitats = sort_by_distinctiveness(watercourse_habitats)
     
     # Build HTML table with improved styling (30% narrower, better colors)
     html_table = """
