@@ -106,14 +106,26 @@ def is_watercourse(name: str) -> bool:
     return "watercourse" in name_lower or "water" in name_lower
 
 def get_hedgerow_habitats(catalog_df: pd.DataFrame) -> List[str]:
-    """Get list of hedgerow habitats from catalog"""
-    all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
-    return sorted([h for h in all_habitats if is_hedgerow(h)])
+    """Get list of hedgerow habitats from catalog using UmbrellaType column"""
+    if "UmbrellaType" in catalog_df.columns:
+        # Use the UmbrellaType column to filter
+        hedgerow_df = catalog_df[catalog_df["UmbrellaType"].astype(str).str.strip().str.lower() == "hedgerow"]
+        return sorted([sstr(x) for x in hedgerow_df["habitat_name"].dropna().unique().tolist()])
+    else:
+        # Fallback to text matching if column doesn't exist
+        all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
+        return sorted([h for h in all_habitats if is_hedgerow(h)])
 
 def get_watercourse_habitats(catalog_df: pd.DataFrame) -> List[str]:
-    """Get list of watercourse habitats from catalog"""
-    all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
-    return sorted([h for h in all_habitats if is_watercourse(h)])
+    """Get list of watercourse habitats from catalog using UmbrellaType column"""
+    if "UmbrellaType" in catalog_df.columns:
+        # Use the UmbrellaType column to filter
+        watercourse_df = catalog_df[catalog_df["UmbrellaType"].astype(str).str.strip().str.lower() == "watercourse"]
+        return sorted([sstr(x) for x in watercourse_df["habitat_name"].dropna().unique().tolist()])
+    else:
+        # Fallback to text matching if column doesn't exist
+        all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
+        return sorted([h for h in all_habitats if is_watercourse(h)])
 
 # ================= Login =================
 DEFAULT_USER = "WC0323"
@@ -817,9 +829,14 @@ with st.container(border=True):
     for idx, row in enumerate(st.session_state.demand_rows):
         c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
         with c1:
+            # Don't autopopulate - use None as default index if habitat is empty
+            default_idx = None
+            if row["habitat_name"] and row["habitat_name"] in HAB_CHOICES:
+                default_idx = HAB_CHOICES.index(row["habitat_name"])
+            
             st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
                 "Habitat", HAB_CHOICES,
-                index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                index=default_idx,
                 key=f"hab_{row['id']}",
                 help="Start typing to filter",
             )
