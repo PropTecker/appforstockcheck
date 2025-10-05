@@ -103,10 +103,39 @@ def is_hedgerow(name: str) -> bool:
     # Check if it's the hedgerow net gain label
     if name_str == "Net Gain (Hedgerows)":
         return True
+    
+    # Check UmbrellaType column if backend is loaded
+    try:
+        if backend and "HabitatCatalog" in backend:
+            catalog = backend["HabitatCatalog"]
+            if "UmbrellaType" in catalog.columns:
+                match = catalog[catalog["habitat_name"].astype(str).str.strip() == name_str]
+                if not match.empty:
+                    umbrella_type = sstr(match.iloc[0]["UmbrellaType"]).lower()
+                    return umbrella_type == "hedgerow"
+    except Exception:
+        pass
+    
+    # Fallback to text matching
     return "hedgerow" in name_str.lower()
 
 def is_watercourse(name: str) -> bool:
-    name_lower = sstr(name).lower()
+    name_str = sstr(name)
+    
+    # Check UmbrellaType column if backend is loaded
+    try:
+        if backend and "HabitatCatalog" in backend:
+            catalog = backend["HabitatCatalog"]
+            if "UmbrellaType" in catalog.columns:
+                match = catalog[catalog["habitat_name"].astype(str).str.strip() == name_str]
+                if not match.empty:
+                    umbrella_type = sstr(match.iloc[0]["UmbrellaType"]).lower()
+                    return umbrella_type == "watercourse"
+    except Exception:
+        pass
+    
+    # Fallback to text matching
+    name_lower = name_str.lower()
     return "watercourse" in name_lower or "water" in name_lower
 
 def get_hedgerow_habitats(catalog_df: pd.DataFrame) -> List[str]:
@@ -802,6 +831,11 @@ with st.container():
     
     # Build and render map
     try:
+        # Check if we need to refresh the map after optimization
+        if st.session_state.get("refresh_map", False):
+            st.session_state["refresh_map"] = False  # Clear the flag
+            st.rerun()  # Rerun to rebuild the map with results
+        
         if has_results:
             current_map = build_results_map(st.session_state["last_alloc_df"])
         else:
@@ -1884,6 +1918,7 @@ if run:
         # NOW save results and set completion flag
         st.session_state["last_alloc_df"] = alloc_df.copy()
         st.session_state["optimization_complete"] = True
+        st.session_state["refresh_map"] = True  # Flag to trigger map refresh
         
         # Show what we loaded
         if catchments_loaded:
