@@ -1784,117 +1784,6 @@ if run:
         
         # ========== MAP UPDATE NOTICE (NO RERUN) ==========
         st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
-        
-        # ========== MANUAL HEDGEROW/WATERCOURSE ENTRIES ==========
-        st.markdown("---")
-        st.markdown("#### ➕ Manual Additions (Hedgerow & Watercourse)")
-        st.info("Add additional hedgerow or watercourse units to your quote. These will be included in the final client report.")
-        
-        # Get available habitats
-        hedgerow_choices = get_hedgerow_habitats(backend["HabitatCatalog"])
-        watercourse_choices = get_watercourse_habitats(backend["HabitatCatalog"])
-        
-        # Hedgerow Section
-        with st.container(border=True):
-            st.markdown("**🌿 Manual Hedgerow Units**")
-            
-            to_delete_hedgerow = []
-            for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
-                c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
-                with c1:
-                    if hedgerow_choices:
-                        st.session_state.manual_hedgerow_rows[idx]["habitat_name"] = st.selectbox(
-                            "Habitat", hedgerow_choices,
-                            index=(hedgerow_choices.index(row["habitat_name"]) if row["habitat_name"] in hedgerow_choices else 0),
-                            key=f"manual_hedge_hab_{row['id']}",
-                            help="Select hedgerow habitat"
-                        )
-                    else:
-                        st.warning("No hedgerow habitats available in catalog")
-                with c2:
-                    st.session_state.manual_hedgerow_rows[idx]["units"] = st.number_input(
-                        "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), 
-                        key=f"manual_hedge_units_{row['id']}"
-                    )
-                with c3:
-                    st.session_state.manual_hedgerow_rows[idx]["price_per_unit"] = st.number_input(
-                        "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
-                        key=f"manual_hedge_price_{row['id']}"
-                    )
-                with c4:
-                    if st.button("🗑️", key=f"del_manual_hedge_{row['id']}", help="Remove this row"):
-                        to_delete_hedgerow.append(row["id"])
-            
-            if to_delete_hedgerow:
-                st.session_state.manual_hedgerow_rows = [r for r in st.session_state.manual_hedgerow_rows if r["id"] not in to_delete_hedgerow]
-                st.rerun()
-            
-            col1, col2 = st.columns([0.5, 0.5])
-            with col1:
-                if st.button("➕ Add Hedgerow Entry", key="add_manual_hedge_btn"):
-                    st.session_state.manual_hedgerow_rows.append({
-                        "id": st.session_state._next_manual_hedgerow_id,
-                        "habitat_name": hedgerow_choices[0] if hedgerow_choices else "",
-                        "units": 0.0,
-                        "price_per_unit": 0.0
-                    })
-                    st.session_state._next_manual_hedgerow_id += 1
-                    st.rerun()
-            with col2:
-                if st.button("🧹 Clear Hedgerow", key="clear_manual_hedge_btn"):
-                    st.session_state.manual_hedgerow_rows = []
-                    st.rerun()
-        
-        # Watercourse Section
-        with st.container(border=True):
-            st.markdown("**💧 Manual Watercourse Units**")
-            
-            to_delete_watercourse = []
-            for idx, row in enumerate(st.session_state.manual_watercourse_rows):
-                c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
-                with c1:
-                    if watercourse_choices:
-                        st.session_state.manual_watercourse_rows[idx]["habitat_name"] = st.selectbox(
-                            "Habitat", watercourse_choices,
-                            index=(watercourse_choices.index(row["habitat_name"]) if row["habitat_name"] in watercourse_choices else 0),
-                            key=f"manual_water_hab_{row['id']}",
-                            help="Select watercourse habitat"
-                        )
-                    else:
-                        st.warning("No watercourse habitats available in catalog")
-                with c2:
-                    st.session_state.manual_watercourse_rows[idx]["units"] = st.number_input(
-                        "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)),
-                        key=f"manual_water_units_{row['id']}"
-                    )
-                with c3:
-                    st.session_state.manual_watercourse_rows[idx]["price_per_unit"] = st.number_input(
-                        "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
-                        key=f"manual_water_price_{row['id']}"
-                    )
-                with c4:
-                    if st.button("🗑️", key=f"del_manual_water_{row['id']}", help="Remove this row"):
-                        to_delete_watercourse.append(row["id"])
-            
-            if to_delete_watercourse:
-                st.session_state.manual_watercourse_rows = [r for r in st.session_state.manual_watercourse_rows if r["id"] not in to_delete_watercourse]
-                st.rerun()
-            
-            col1, col2 = st.columns([0.5, 0.5])
-            with col1:
-                if st.button("➕ Add Watercourse Entry", key="add_manual_water_btn"):
-                    st.session_state.manual_watercourse_rows.append({
-                        "id": st.session_state._next_manual_watercourse_id,
-                        "habitat_name": watercourse_choices[0] if watercourse_choices else "",
-                        "units": 0.0,
-                        "price_per_unit": 0.0
-                    })
-                    st.session_state._next_manual_watercourse_id += 1
-                    st.rerun()
-            with col2:
-                if st.button("🧹 Clear Watercourse", key="clear_manual_water_btn"):
-                    st.session_state.manual_watercourse_rows = []
-                    st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
@@ -2251,6 +2140,119 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
+
+# ========== MANUAL HEDGEROW/WATERCOURSE ENTRIES (PERSISTENT) ==========
+# This section persists across reruns because it's outside the "if run:" block
+if st.session_state.get("optimization_complete", False):
+    st.markdown("---")
+    st.markdown("#### ➕ Manual Additions (Hedgerow & Watercourse)")
+    st.info("Add additional hedgerow or watercourse units to your quote. These will be included in the final client report.")
+    
+    # Get available habitats
+    hedgerow_choices = get_hedgerow_habitats(backend["HabitatCatalog"])
+    watercourse_choices = get_watercourse_habitats(backend["HabitatCatalog"])
+    
+    # Hedgerow Section
+    with st.container(border=True):
+        st.markdown("**🌿 Manual Hedgerow Units**")
+        
+        to_delete_hedgerow = []
+        for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
+            c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
+            with c1:
+                if hedgerow_choices:
+                    st.session_state.manual_hedgerow_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat", hedgerow_choices,
+                        index=(hedgerow_choices.index(row["habitat_name"]) if row["habitat_name"] in hedgerow_choices else 0),
+                        key=f"manual_hedge_hab_{row['id']}",
+                        help="Select hedgerow habitat"
+                    )
+                else:
+                    st.warning("No hedgerow habitats available in catalog")
+            with c2:
+                st.session_state.manual_hedgerow_rows[idx]["units"] = st.number_input(
+                    "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), 
+                    key=f"manual_hedge_units_{row['id']}"
+                )
+            with c3:
+                st.session_state.manual_hedgerow_rows[idx]["price_per_unit"] = st.number_input(
+                    "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
+                    key=f"manual_hedge_price_{row['id']}"
+                )
+            with c4:
+                if st.button("🗑️", key=f"del_manual_hedge_{row['id']}", help="Remove this row"):
+                    to_delete_hedgerow.append(row["id"])
+        
+        if to_delete_hedgerow:
+            st.session_state.manual_hedgerow_rows = [r for r in st.session_state.manual_hedgerow_rows if r["id"] not in to_delete_hedgerow]
+            st.rerun()
+        
+        col1, col2 = st.columns([0.5, 0.5])
+        with col1:
+            if st.button("➕ Add Hedgerow Entry", key="add_manual_hedge_btn"):
+                st.session_state.manual_hedgerow_rows.append({
+                    "id": st.session_state._next_manual_hedgerow_id,
+                    "habitat_name": hedgerow_choices[0] if hedgerow_choices else "",
+                    "units": 0.0,
+                    "price_per_unit": 0.0
+                })
+                st.session_state._next_manual_hedgerow_id += 1
+                st.rerun()
+        with col2:
+            if st.button("🧹 Clear Hedgerow", key="clear_manual_hedge_btn"):
+                st.session_state.manual_hedgerow_rows = []
+                st.rerun()
+    
+    # Watercourse Section
+    with st.container(border=True):
+        st.markdown("**💧 Manual Watercourse Units**")
+        
+        to_delete_watercourse = []
+        for idx, row in enumerate(st.session_state.manual_watercourse_rows):
+            c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
+            with c1:
+                if watercourse_choices:
+                    st.session_state.manual_watercourse_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat", watercourse_choices,
+                        index=(watercourse_choices.index(row["habitat_name"]) if row["habitat_name"] in watercourse_choices else 0),
+                        key=f"manual_water_hab_{row['id']}",
+                        help="Select watercourse habitat"
+                    )
+                else:
+                    st.warning("No watercourse habitats available in catalog")
+            with c2:
+                st.session_state.manual_watercourse_rows[idx]["units"] = st.number_input(
+                    "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)),
+                    key=f"manual_water_units_{row['id']}"
+                )
+            with c3:
+                st.session_state.manual_watercourse_rows[idx]["price_per_unit"] = st.number_input(
+                    "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
+                    key=f"manual_water_price_{row['id']}"
+                )
+            with c4:
+                if st.button("🗑️", key=f"del_manual_water_{row['id']}", help="Remove this row"):
+                    to_delete_watercourse.append(row["id"])
+        
+        if to_delete_watercourse:
+            st.session_state.manual_watercourse_rows = [r for r in st.session_state.manual_watercourse_rows if r["id"] not in to_delete_watercourse]
+            st.rerun()
+        
+        col1, col2 = st.columns([0.5, 0.5])
+        with col1:
+            if st.button("➕ Add Watercourse Entry", key="add_manual_water_btn"):
+                st.session_state.manual_watercourse_rows.append({
+                    "id": st.session_state._next_manual_watercourse_id,
+                    "habitat_name": watercourse_choices[0] if watercourse_choices else "",
+                    "units": 0.0,
+                    "price_per_unit": 0.0
+                })
+                st.session_state._next_manual_watercourse_id += 1
+                st.rerun()
+        with col2:
+            if st.button("🧹 Clear Watercourse", key="clear_manual_water_btn"):
+                st.session_state.manual_watercourse_rows = []
+                st.rerun()
 
 # Add this to your optimization results section (after the downloads):
 if (st.session_state.get("optimization_complete", False) and 
