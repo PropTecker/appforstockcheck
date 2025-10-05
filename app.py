@@ -1297,9 +1297,12 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
         on="bank_id", how="left"
     ).merge(Catalog, on="habitat_name", how="left")
     
-    # Ensure bank_name exists (fallback to bank_id if not present)
+    # Ensure bank_name exists (fallback to BANK_KEY if not present)
     if "bank_name" not in stock_full.columns:
-        stock_full["bank_name"] = stock_full["bank_id"]
+        if "BANK_KEY" in stock_full.columns:
+            stock_full["bank_name"] = stock_full["BANK_KEY"]
+        else:
+            stock_full["bank_name"] = stock_full["bank_id"]
     
     stock_full = stock_full[stock_full["habitat_name"].map(is_hedgerow)].copy()
     
@@ -1392,7 +1395,8 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
                 "stock_id": stock_id,
                 "tier": tier,
                 "unit_price": price,
-                "cost_per_unit": price
+                "cost_per_unit": price,
+                "stock_use": {stock_id: 1.0}
             })
             
             stock_caps[stock_id] = qty_avail
