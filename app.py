@@ -520,10 +520,10 @@ def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     if "broader_type" not in df.columns: df["broader_type"] = ""
     if "distinctiveness_name" not in df.columns: df["distinctiveness_name"] = ""
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
-    df = df[~df["habitat_name"].map(is_hedgerow)].copy()
+    # NOTE: Do NOT filter out hedgerows here! They need to be available for hedgerow optimization
     return df
 
-backend["Stock"] = backend["Stock"][~backend["Stock"]["habitat_name"].map(is_hedgerow)].copy()
+# NOTE: Do NOT filter hedgerows from backend globally - they're needed for hedgerow optimization
 backend["Pricing"] = normalise_pricing(backend["Pricing"])
 
 # Distinctiveness mapping
@@ -831,11 +831,6 @@ with st.container():
     
     # Build and render map
     try:
-        # Check if we need to refresh the map after optimization
-        if st.session_state.get("refresh_map", False):
-            st.session_state["refresh_map"] = False  # Clear the flag
-            st.rerun()  # Rerun to rebuild the map with results
-        
         if has_results:
             current_map = build_results_map(st.session_state["last_alloc_df"])
         else:
@@ -1918,7 +1913,6 @@ if run:
         # NOW save results and set completion flag
         st.session_state["last_alloc_df"] = alloc_df.copy()
         st.session_state["optimization_complete"] = True
-        st.session_state["refresh_map"] = True  # Flag to trigger map refresh
         
         # Show what we loaded
         if catchments_loaded:
