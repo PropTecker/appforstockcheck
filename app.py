@@ -1458,7 +1458,9 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
                 "tier": tier,
                 "unit_price": price,
                 "cost_per_unit": price,
-                "stock_use": {stock_id: 1.0}
+                "stock_use": {stock_id: 1.0},
+                "type": "normal",          # <-- add this
+                "proximity": tier   
             })
             
             stock_caps[stock_id] = qty_avail
@@ -1754,7 +1756,7 @@ def optimise(demand_df: pd.DataFrame,
                         "bank_name": opt.get("bank_name",""),
                         "bank_id": opt.get("bank_id",""),
                         "supply_habitat": opt["supply_habitat"],
-                        "allocation_type": opt["type"],
+                        "allocation_type": opt.get("type", "normal"),
                         "tier": opt["tier"],
                         "units_supplied": qty,
                         "unit_price": opt["unit_price"],
@@ -1853,7 +1855,7 @@ def optimise(demand_df: pd.DataFrame,
                 "bank_name": opt.get("bank_name",""),
                 "bank_id": opt.get("bank_id",""),
                 "supply_habitat": opt["supply_habitat"],
-                "allocation_type": opt["type"],
+                "allocation_type": opt.get("type", "normal"),
                 "tier": opt["tier"],
                 "units_supplied": need,
                 "unit_price": opt["unit_price"],
