@@ -28,6 +28,7 @@ import folium
 ADMIN_FEE_GBP = 500.0
 SINGLE_BANK_SOFT_PCT = 0.01
 MAP_CATCHMENT_ALPHA = 0.03
+NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
 UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}
 
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
@@ -95,7 +96,38 @@ def norm_name(s: str) -> str:
     return t
 
 def is_hedgerow(name: str) -> bool:
+    """Check if a habitat name contains 'hedgerow' - basic name-based check"""
     return "hedgerow" in sstr(name).lower()
+
+def is_watercourse(name: str) -> bool:
+    """Check if a habitat name contains watercourse-related terms - basic name-based check"""
+    n = sstr(name).lower()
+    return any(term in n for term in ["watercourse", "ditch", "river", "stream", "water"])
+
+def get_habitat_ledger(habitat_name: str, catalog_df: pd.DataFrame) -> str:
+    """
+    Determine which ledger a habitat belongs to based on broader_type in catalog.
+    Returns: "Hedgerow", "Watercourse", or "Area" (default)
+    """
+    if habitat_name == NET_GAIN_LABEL:
+        return "Area"
+    
+    matches = catalog_df[catalog_df["habitat_name"] == habitat_name]
+    if matches.empty:
+        # Fallback to name-based check
+        if is_hedgerow(habitat_name):
+            return "Hedgerow"
+        if is_watercourse(habitat_name):
+            return "Watercourse"
+        return "Area"
+    
+    broader = sstr(matches["broader_type"].iloc[0]).lower()
+    if "hedgerow" in broader:
+        return "Hedgerow"
+    elif "watercourse" in broader or "water" in broader:
+        return "Watercourse"
+    else:
+        return "Area"
 
 # ================= Login =================
 DEFAULT_USER = "WC0323"
@@ -442,7 +474,7 @@ for sheet, cols in {
         st.error(f"{sheet} is missing required columns: {missing}")
         st.stop()
 
-# Normalise Pricing; drop Hedgerow
+# Normalise Pricing (keep all ledgers: Area, Hedgerow, Watercourse)
 def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     df = pr_df.copy()
     price_cols = [c for c in df.columns if c.strip().lower() in ("price","unit price","unit_price","unitprice")]
@@ -457,10 +489,10 @@ def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     if "broader_type" not in df.columns: df["broader_type"] = ""
     if "distinctiveness_name" not in df.columns: df["distinctiveness_name"] = ""
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
-    df = df[~df["habitat_name"].map(is_hedgerow)].copy()
+    # No longer filter out hedgerow/watercourse - keep all ledgers
     return df
 
-backend["Stock"] = backend["Stock"][~backend["Stock"]["habitat_name"].map(is_hedgerow)].copy()
+# Keep all ledgers in Stock (Area, Hedgerow, Watercourse)
 backend["Pricing"] = normalise_pricing(backend["Pricing"])
 
 # Distinctiveness mapping
@@ -787,7 +819,6 @@ with st.container():
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
-NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
 
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
@@ -847,11 +878,14 @@ demand_df = pd.DataFrame(
      for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
 )
 
-# Hedgerow guard
+# Ledger validation: ensure all demand rows are from the same ledger
 if not demand_df.empty:
-    banned = [h for h in demand_df["habitat_name"] if is_hedgerow(h)]
-    if banned:
-        st.error("Hedgerow units cannot be traded in this optimiser. Remove these line(s): " + ", ".join(sorted(set(banned))))
+    ledgers = [get_habitat_ledger(h, backend["HabitatCatalog"]) for h in demand_df["habitat_name"]]
+    unique_ledgers = set(ledgers)
+    if len(unique_ledgers) > 1:
+        ledger_mapping = {h: l for h, l in zip(demand_df["habitat_name"], ledgers)}
+        st.error(f"Cannot mix habitats from different ledgers in one optimisation. Found: {unique_ledgers}. " +
+                 "Ledger per habitat: " + ", ".join([f"{h}={l}" for h, l in ledger_mapping.items()]))
         st.stop()
 
 if not demand_df.empty:
@@ -899,6 +933,12 @@ def prepare_options(demand_df: pd.DataFrame,
     Catalog = backend["HabitatCatalog"].copy()
     Stock = backend["Stock"].copy()
     Trading = backend.get("TradingRules", pd.DataFrame())
+    
+    # Determine which ledger we're working with based on demand
+    demand_ledgers = set([get_habitat_ledger(h, Catalog) for h in demand_df["habitat_name"]])
+    if len(demand_ledgers) != 1:
+        raise RuntimeError(f"All demand habitats must be from the same ledger. Found: {demand_ledgers}")
+    active_ledger = demand_ledgers.pop()
 
     for df, cols in [
         (Banks, ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name","lat","lon","postcode","address"]),
@@ -918,7 +958,11 @@ def prepare_options(demand_df: pd.DataFrame,
         Banks[["bank_id","bank_name","lpa_name","nca_name"]],
         on="bank_id", how="left"
     ).merge(Catalog, on="habitat_name", how="left")
-    stock_full = stock_full[~stock_full["habitat_name"].map(is_hedgerow)].copy()
+    
+    # Filter stock to only the active ledger
+    stock_full["_ledger"] = stock_full["habitat_name"].apply(lambda h: get_habitat_ledger(h, Catalog))
+    stock_full = stock_full[stock_full["_ledger"] == active_ledger].copy()
+    stock_full = stock_full.drop(columns=["_ledger"])
 
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
 
@@ -933,7 +977,11 @@ def prepare_options(demand_df: pd.DataFrame,
     for c in ["broader_type_eff", "distinctiveness_name_eff", "tier", "bank_id", "habitat_name", "BANK_KEY", "bank_name"]:
         if c in pc_join.columns:
             pc_join[c] = pc_join[c].map(sstr)
-    pricing_enriched = pc_join[~pc_join["habitat_name"].map(is_hedgerow)].copy()
+    
+    # Filter pricing to only the active ledger
+    pc_join["_ledger"] = pc_join["habitat_name"].apply(lambda h: get_habitat_ledger(h, Catalog))
+    pricing_enriched = pc_join[pc_join["_ledger"] == active_ledger].copy()
+    pricing_enriched = pricing_enriched.drop(columns=["_ledger"])
 
     def dval(name: Optional[str]) -> float:
         key = sstr(name)
@@ -1019,7 +1067,8 @@ def prepare_options(demand_df: pd.DataFrame,
             explicit = True
             for _, rule in backend["TradingRules"][backend["TradingRules"]["demand_habitat"] == dem_hab].iterrows():
                 sh = sstr(rule["allowed_supply_habitat"])
-                if is_hedgerow(sh):
+                # Ensure supply habitat is from the same ledger
+                if get_habitat_ledger(sh, Catalog) != active_ledger:
                     continue
                 s_min = sstr(rule.get("min_distinctiveness_name"))
                 df_s = stock_full[stock_full["habitat_name"] == sh].copy()
@@ -1045,7 +1094,7 @@ def prepare_options(demand_df: pd.DataFrame,
             continue
 
         candidates = pd.concat(cand_parts, ignore_index=True)
-        candidates = candidates[~candidates["habitat_name"].map(is_hedgerow)].copy()
+        # No need to filter by ledger here - already filtered in stock_full
 
         # Single-habitat options
         for _, srow in candidates.iterrows():
@@ -1091,7 +1140,8 @@ def prepare_options(demand_df: pd.DataFrame,
             })
 
         # Paired Orchard+Scrub for MEDIUM — FAR ONLY, 50/50 by UNITS (prices kept separate)
-        if sstr(d_dist).lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
+        # Only applies to Area ledger
+        if active_ledger == "Area" and sstr(d_dist).lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
             banks_keys = stock_full["BANK_KEY"].dropna().unique().tolist()
             for bk in banks_keys:
                 orch_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (stock_full["habitat_name"] == ORCHARD_NAME)]
