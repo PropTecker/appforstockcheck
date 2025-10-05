@@ -856,7 +856,7 @@ with st.container(border=True):
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                {"id": st.session_state._next_row_id, "habitat_name": "", "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
@@ -870,8 +870,10 @@ with st.container(border=True):
             st.rerun()
     with cc3:
         if st.button("🧹 Clear all", key="clear_all_btn"):
-            st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
-            st.session_state._next_row_id = 2
+            # Clear all rows - reset to empty state
+            for row in st.session_state.demand_rows:
+                row["habitat_name"] = ""
+                row["units"] = 0.0
             st.rerun()
 
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
@@ -1887,6 +1889,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     # Process manual hedgerow entries
     manual_hedgerow_cost = 0.0
     for row in manual_hedgerow_rows:
+        habitat_lost = sstr(row.get("habitat_lost", ""))
         habitat_name = sstr(row.get("habitat_name", ""))
         units = float(row.get("units", 0.0) or 0.0)
         price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
@@ -1895,19 +1898,38 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             offset_cost = units * price_per_unit
             manual_hedgerow_cost += offset_cost
             
-            # Get distinctiveness from catalog
-            cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
-            if not cat_match.empty:
-                distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+            # Determine distinctiveness for lost habitat
+            if habitat_lost == NET_GAIN_LABEL:
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any"
             else:
-                distinctiveness = "Medium"
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_lost]
+                if not cat_match.empty:
+                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    demand_habitat_display = habitat_lost
+                else:
+                    demand_distinctiveness = "Medium"
+                    demand_habitat_display = habitat_lost if habitat_lost else "Not specified"
+            
+            # Determine distinctiveness for supplied habitat
+            if habitat_name == NET_GAIN_LABEL:
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any"
+            else:
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
+                if not cat_match.empty:
+                    supply_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    supply_habitat_display = habitat_name
+                else:
+                    supply_distinctiveness = "Medium"
+                    supply_habitat_display = habitat_name
             
             row_data = {
-                "Distinctiveness": distinctiveness,
-                "Habitats Lost": habitat_name,
+                "Distinctiveness": demand_distinctiveness,
+                "Habitats Lost": demand_habitat_display,
                 "# Units": f"{units:.2f}",
-                "Distinctiveness_Supply": distinctiveness,
-                "Habitats Supplied": habitat_name,
+                "Distinctiveness_Supply": supply_distinctiveness,
+                "Habitats Supplied": supply_habitat_display,
                 "# Units_Supply": f"{units:.2f}",
                 "Price Per Unit": f"£{price_per_unit:,.0f}",
                 "Offset Cost": f"£{offset_cost:,.0f}"
@@ -1917,6 +1939,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     # Process manual watercourse entries
     manual_watercourse_cost = 0.0
     for row in manual_watercourse_rows:
+        habitat_lost = sstr(row.get("habitat_lost", ""))
         habitat_name = sstr(row.get("habitat_name", ""))
         units = float(row.get("units", 0.0) or 0.0)
         price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
@@ -1925,19 +1948,38 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             offset_cost = units * price_per_unit
             manual_watercourse_cost += offset_cost
             
-            # Get distinctiveness from catalog
-            cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
-            if not cat_match.empty:
-                distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+            # Determine distinctiveness for lost habitat
+            if habitat_lost == NET_GAIN_LABEL:
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any"
             else:
-                distinctiveness = "Medium"
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_lost]
+                if not cat_match.empty:
+                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    demand_habitat_display = habitat_lost
+                else:
+                    demand_distinctiveness = "Medium"
+                    demand_habitat_display = habitat_lost if habitat_lost else "Not specified"
+            
+            # Determine distinctiveness for supplied habitat
+            if habitat_name == NET_GAIN_LABEL:
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any"
+            else:
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
+                if not cat_match.empty:
+                    supply_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    supply_habitat_display = habitat_name
+                else:
+                    supply_distinctiveness = "Medium"
+                    supply_habitat_display = habitat_name
             
             row_data = {
-                "Distinctiveness": distinctiveness,
-                "Habitats Lost": habitat_name,
+                "Distinctiveness": demand_distinctiveness,
+                "Habitats Lost": demand_habitat_display,
                 "# Units": f"{units:.2f}",
-                "Distinctiveness_Supply": distinctiveness,
-                "Habitats Supplied": habitat_name,
+                "Distinctiveness_Supply": supply_distinctiveness,
+                "Habitats Supplied": supply_habitat_display,
                 "# Units_Supply": f"{units:.2f}",
                 "Price Per Unit": f"£{price_per_unit:,.0f}",
                 "Offset Cost": f"£{offset_cost:,.0f}"
@@ -1947,6 +1989,76 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
     # Update total cost to include manual entries
     total_cost_with_manual = total_cost + manual_hedgerow_cost + manual_watercourse_cost
     total_with_admin = total_cost_with_manual + admin_fee
+    
+    # Bundle Low + 10% Net Gain rows together for each habitat type
+    def bundle_low_and_net_gain(habitats_list):
+        """Bundle Low distinctiveness and 10% Net Gain rows together"""
+        bundled = []
+        low_rows = {}
+        net_gain_rows = {}
+        other_rows = []
+        
+        # Separate rows by distinctiveness
+        for row in habitats_list:
+            dist = row["Distinctiveness"]
+            supply_dist = row["Distinctiveness_Supply"]
+            
+            # Check if this is a Low or Net Gain row
+            if dist == "Low" or dist == "10% Net Gain":
+                # Group by supply habitat for bundling
+                supply_hab = row["Habitats Supplied"]
+                if dist == "Low":
+                    if supply_hab not in low_rows:
+                        low_rows[supply_hab] = []
+                    low_rows[supply_hab].append(row)
+                else:  # 10% Net Gain
+                    if supply_hab not in net_gain_rows:
+                        net_gain_rows[supply_hab] = []
+                    net_gain_rows[supply_hab].append(row)
+            else:
+                other_rows.append(row)
+        
+        # Bundle Low + Net Gain rows for same supply habitat
+        all_supply_habitats = set(list(low_rows.keys()) + list(net_gain_rows.keys()))
+        for supply_hab in sorted(all_supply_habitats):
+            low_list = low_rows.get(supply_hab, [])
+            ng_list = net_gain_rows.get(supply_hab, [])
+            
+            if low_list and ng_list:
+                # Bundle them together
+                total_units = sum(float(r["# Units"].replace(",", "")) for r in low_list + ng_list)
+                total_supply_units = sum(float(r["# Units_Supply"].replace(",", "")) for r in low_list + ng_list)
+                total_cost = sum(float(r["Offset Cost"].replace("£", "").replace(",", "")) for r in low_list + ng_list)
+                
+                # Use weighted average for price per unit
+                avg_price = total_cost / total_supply_units if total_supply_units > 0 else 0
+                
+                bundled_row = {
+                    "Distinctiveness": "Low + 10% Net Gain",
+                    "Habitats Lost": low_list[0]["Habitats Lost"] if low_list else ng_list[0]["Habitats Lost"],
+                    "# Units": f"{total_units:.2f}",
+                    "Distinctiveness_Supply": low_list[0]["Distinctiveness_Supply"] if low_list else ng_list[0]["Distinctiveness_Supply"],
+                    "Habitats Supplied": supply_hab,
+                    "# Units_Supply": f"{total_supply_units:.2f}",
+                    "Price Per Unit": f"£{avg_price:,.0f}",
+                    "Offset Cost": f"£{total_cost:,.0f}"
+                }
+                bundled.append(bundled_row)
+            elif low_list:
+                # Only Low rows, add them as is
+                bundled.extend(low_list)
+            elif ng_list:
+                # Only Net Gain rows, add them as is
+                bundled.extend(ng_list)
+        
+        # Add other rows
+        bundled.extend(other_rows)
+        return bundled
+    
+    # Apply bundling to each habitat type
+    area_habitats = bundle_low_and_net_gain(area_habitats)
+    hedgerow_habitats = bundle_low_and_net_gain(hedgerow_habitats)
+    watercourse_habitats = bundle_low_and_net_gain(watercourse_habitats)
     
     # Build HTML table with improved styling (30% narrower, better colors)
     html_table = """
@@ -2033,24 +2145,7 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Spatial Risk Multiplier section (placeholder)
-    html_table += """
-        <tr style="background-color: #D9F2D0;">
-            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
-        </tr>
-        <tr>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-        </tr>
-        <tr>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Hedgerow Habitats</td>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-        </tr>
-        <tr>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Watercourse Habitats</td>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-        </tr>
-    """
+
     
     # Calculate total units including manual entries
     total_demand_units = demand_df['units_required'].sum()
@@ -2173,30 +2268,49 @@ if st.session_state.get("optimization_complete", False):
     with st.container(border=True):
         st.markdown("**🌿 Manual Hedgerow Units**")
         
+        # Add Net Gain option to hedgerow choices
+        hedgerow_choices_with_ng = hedgerow_choices + [NET_GAIN_LABEL] if hedgerow_choices else [NET_GAIN_LABEL]
+        
         to_delete_hedgerow = []
         for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
-            c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
+            c1, c2, c3, c4, c5 = st.columns([0.30, 0.30, 0.15, 0.15, 0.10])
             with c1:
-                if hedgerow_choices:
-                    st.session_state.manual_hedgerow_rows[idx]["habitat_name"] = st.selectbox(
-                        "Habitat", hedgerow_choices,
-                        index=(hedgerow_choices.index(row["habitat_name"]) if row["habitat_name"] in hedgerow_choices else 0),
-                        key=f"manual_hedge_hab_{row['id']}",
-                        help="Select hedgerow habitat"
+                if hedgerow_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_lost") and row["habitat_lost"] in hedgerow_choices_with_ng:
+                        default_idx = hedgerow_choices_with_ng.index(row["habitat_lost"])
+                    st.session_state.manual_hedgerow_rows[idx]["habitat_lost"] = st.selectbox(
+                        "Habitat Lost", hedgerow_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_hedge_lost_{row['id']}",
+                        help="Select hedgerow habitat lost"
                     )
                 else:
                     st.warning("No hedgerow habitats available in catalog")
             with c2:
+                if hedgerow_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_name") and row["habitat_name"] in hedgerow_choices_with_ng:
+                        default_idx = hedgerow_choices_with_ng.index(row["habitat_name"])
+                    st.session_state.manual_hedgerow_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat to Mitigate", hedgerow_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_hedge_hab_{row['id']}",
+                        help="Select hedgerow habitat to mitigate"
+                    )
+                else:
+                    st.warning("No hedgerow habitats available")
+            with c3:
                 st.session_state.manual_hedgerow_rows[idx]["units"] = st.number_input(
                     "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), 
                     key=f"manual_hedge_units_{row['id']}"
                 )
-            with c3:
+            with c4:
                 st.session_state.manual_hedgerow_rows[idx]["price_per_unit"] = st.number_input(
                     "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
                     key=f"manual_hedge_price_{row['id']}"
                 )
-            with c4:
+            with c5:
                 if st.button("🗑️", key=f"del_manual_hedge_{row['id']}", help="Remove this row"):
                     to_delete_hedgerow.append(row["id"])
         
@@ -2209,7 +2323,8 @@ if st.session_state.get("optimization_complete", False):
             if st.button("➕ Add Hedgerow Entry", key="add_manual_hedge_btn"):
                 st.session_state.manual_hedgerow_rows.append({
                     "id": st.session_state._next_manual_hedgerow_id,
-                    "habitat_name": hedgerow_choices[0] if hedgerow_choices else "",
+                    "habitat_lost": "",
+                    "habitat_name": "",
                     "units": 0.0,
                     "price_per_unit": 0.0
                 })
@@ -2224,30 +2339,49 @@ if st.session_state.get("optimization_complete", False):
     with st.container(border=True):
         st.markdown("**💧 Manual Watercourse Units**")
         
+        # Add Net Gain option to watercourse choices
+        watercourse_choices_with_ng = watercourse_choices + [NET_GAIN_LABEL] if watercourse_choices else [NET_GAIN_LABEL]
+        
         to_delete_watercourse = []
         for idx, row in enumerate(st.session_state.manual_watercourse_rows):
-            c1, c2, c3, c4 = st.columns([0.45, 0.20, 0.20, 0.15])
+            c1, c2, c3, c4, c5 = st.columns([0.30, 0.30, 0.15, 0.15, 0.10])
             with c1:
-                if watercourse_choices:
-                    st.session_state.manual_watercourse_rows[idx]["habitat_name"] = st.selectbox(
-                        "Habitat", watercourse_choices,
-                        index=(watercourse_choices.index(row["habitat_name"]) if row["habitat_name"] in watercourse_choices else 0),
-                        key=f"manual_water_hab_{row['id']}",
-                        help="Select watercourse habitat"
+                if watercourse_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_lost") and row["habitat_lost"] in watercourse_choices_with_ng:
+                        default_idx = watercourse_choices_with_ng.index(row["habitat_lost"])
+                    st.session_state.manual_watercourse_rows[idx]["habitat_lost"] = st.selectbox(
+                        "Habitat Lost", watercourse_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_water_lost_{row['id']}",
+                        help="Select watercourse habitat lost"
                     )
                 else:
                     st.warning("No watercourse habitats available in catalog")
             with c2:
+                if watercourse_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_name") and row["habitat_name"] in watercourse_choices_with_ng:
+                        default_idx = watercourse_choices_with_ng.index(row["habitat_name"])
+                    st.session_state.manual_watercourse_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat to Mitigate", watercourse_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_water_hab_{row['id']}",
+                        help="Select watercourse habitat to mitigate"
+                    )
+                else:
+                    st.warning("No watercourse habitats available")
+            with c3:
                 st.session_state.manual_watercourse_rows[idx]["units"] = st.number_input(
                     "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)),
                     key=f"manual_water_units_{row['id']}"
                 )
-            with c3:
+            with c4:
                 st.session_state.manual_watercourse_rows[idx]["price_per_unit"] = st.number_input(
                     "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
                     key=f"manual_water_price_{row['id']}"
                 )
-            with c4:
+            with c5:
                 if st.button("🗑️", key=f"del_manual_water_{row['id']}", help="Remove this row"):
                     to_delete_watercourse.append(row["id"])
         
@@ -2260,7 +2394,8 @@ if st.session_state.get("optimization_complete", False):
             if st.button("➕ Add Watercourse Entry", key="add_manual_water_btn"):
                 st.session_state.manual_watercourse_rows.append({
                     "id": st.session_state._next_manual_watercourse_id,
-                    "habitat_name": watercourse_choices[0] if watercourse_choices else "",
+                    "habitat_lost": "",
+                    "habitat_name": "",
                     "units": 0.0,
                     "price_per_unit": 0.0
                 })
