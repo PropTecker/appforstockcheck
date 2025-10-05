@@ -1286,10 +1286,21 @@ def prepare_hedgerow_options(demand_df: pd.DataFrame,
     Stock = make_bank_key_col(Stock, Banks)
     
     # Filter for ONLY hedgerow habitats
+    # Ensure bank_name is available from Banks
+    banks_cols = ["bank_id"]
+    for col in ["bank_name", "lpa_name", "nca_name"]:
+        if col in Banks.columns:
+            banks_cols.append(col)
+    
     stock_full = Stock.merge(
-        Banks[["bank_id","bank_name","lpa_name","nca_name"]],
+        Banks[banks_cols].drop_duplicates(),
         on="bank_id", how="left"
     ).merge(Catalog, on="habitat_name", how="left")
+    
+    # Ensure bank_name exists (fallback to bank_id if not present)
+    if "bank_name" not in stock_full.columns:
+        stock_full["bank_name"] = stock_full["bank_id"]
+    
     stock_full = stock_full[stock_full["habitat_name"].map(is_hedgerow)].copy()
     
     pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
