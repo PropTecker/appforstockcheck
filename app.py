@@ -141,11 +141,6 @@ def reset_quote():
 
 init_session_state()
 
-# Check if we need to refresh the map after optimization (MUST be very early in script)
-if st.session_state.get("needs_map_refresh", False):
-    st.session_state["needs_map_refresh"] = False
-    st.rerun()
-
 # ================= Safe strings =================
 def sstr(x) -> str:
     if x is None:
@@ -618,6 +613,11 @@ dist_levels_map = {
     for _, r in backend["DistinctivenessLevels"].iterrows()
 }
 dist_levels_map.update({k.lower(): v for k, v in list(dist_levels_map.items())})
+
+# Check if we need to refresh the map after optimization (after backend is loaded)
+if st.session_state.get("needs_map_refresh", False):
+    st.session_state["needs_map_refresh"] = False
+    st.rerun()
 
 # ================= Locate UI =================
 with st.container():
@@ -2847,7 +2847,7 @@ if st.session_state.get("optimization_complete", False) and st.session_state.get
         )
     
     # Show allocation detail in expander
-    with st.expander("📋 Allocation detail", expanded=False):
+    with st.expander("📋 Allocation detail", expanded=True):
         alloc_df = st.session_state["last_alloc_df"]
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
@@ -2855,7 +2855,7 @@ if st.session_state.get("optimization_complete", False) and st.session_state.get
     
     # Show Site/Habitat totals in expander
     if st.session_state.get("site_hab_totals") is not None:
-        with st.expander("📊 Site/Habitat totals (effective units)", expanded=False):
+        with st.expander("📊 Site/Habitat totals (effective units)", expanded=True):
             st.dataframe(st.session_state["site_hab_totals"], use_container_width=True, hide_index=True)
     
     # Show By bank in expander
