@@ -390,14 +390,22 @@ def arcgis_point_query(layer_url: str, lat: float, lon: float, out_fields: str) 
     feats = js.get("features") or []
     return feats[0] if feats else {}
 
-def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_field: str) -> List[str]:
+def layer_neighbor_names(layer_url: str,
+                         polygon_geom: Dict[str, Any],
+                         name_field: str,
+                         spatial_rel: str = "esriSpatialRelTouches") -> List[str]:
     if not polygon_geom:
         return []
     data = {
-        "f": "json", "where": "1=1",
-        "geometry": json.dumps(polygon_geom), "geometryType": "esriGeometryPolygon",
-        "inSR": 4326, "spatialRel": "esriSpatialRelIntersects",
-        "outFields": name_field, "returnGeometry": "false", "outSR": 4326,
+        "f": "json",
+        "where": "1=1",
+        "geometry": json.dumps(polygon_geom),
+        "geometryType": "esriGeometryPolygon",
+        "inSR": 4326,
+        "spatialRel": spatial_rel,          # <-- Touches by default
+        "outFields": name_field,
+        "returnGeometry": "false",
+        "outSR": 4326,
         "geometryPrecision": 5,
     }
     r = http_post(f"{layer_url}/query", data=data)
@@ -668,8 +676,8 @@ def find_site(postcode: str, address: str):
     nca_geom_esri = nca_feat.get("geometry")
     lpa_gj = esri_polygon_to_geojson(lpa_geom_esri)
     nca_gj = esri_polygon_to_geojson(nca_geom_esri)
-    lpa_nei = [n for n in layer_intersect_names(LPA_URL, lpa_geom_esri, "LAD24NM") if n != t_lpa]
-    nca_nei = [n for n in layer_intersect_names(NCA_URL, nca_geom_esri, "NCA_Name") if n != t_nca]
+    lpa_nei = [n for n in layer_neighbor_names(LPA_URL, lpa_geom_esri, "LAD24NM", "esriSpatialRelTouches") if n != t_lpa]
+    nca_nei = [n for n in layer_neighbor_names(NCA_URL, nca_geom_esri, "NCA_Name", "esriSpatialRelTouches") if n != t_nca]
     lpa_nei_norm = [norm_name(n) for n in lpa_nei]
     nca_nei_norm = [norm_name(n) for n in nca_nei]
     
