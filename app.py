@@ -121,7 +121,7 @@ def reset_quote():
     st.session_state.email_client_name = "INSERT NAME"
     st.session_state.email_ref_number = "BNG00XXX"
     st.session_state.email_location = "INSERT LOCATION"
-    st.session_state.map_version += 1
+    st.session_state.map_version = st.session_state.get("map_version", 0) + 1
     # Clear location input fields
     st.session_state.postcode_input = ""
     st.session_state.address_input = ""
