@@ -2337,8 +2337,9 @@ if run:
         st.session_state["total_cost"] = total_cost
         st.session_state["contract_size"] = size
         
-        # Trigger map refresh by setting a flag
+        # Trigger immediate map refresh
         st.session_state["needs_map_refresh"] = True
+        st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
