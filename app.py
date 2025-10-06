@@ -124,9 +124,11 @@ def reset_quote():
         st.session_state["email_ref_number"] = "BNG00XXX"
         st.session_state["email_location"] = "INSERT LOCATION"
         st.session_state["map_version"] = st.session_state.get("map_version", 0) + 1
-        # Clear location input fields
-        st.session_state["postcode_input"] = ""
-        st.session_state["address_input"] = ""
+        # Clear location input fields by deleting them (widget-bound variables)
+        if "postcode_input" in st.session_state:
+            del st.session_state["postcode_input"]
+        if "address_input" in st.session_state:
+            del st.session_state["address_input"]
         # Clear summary dataframes
         st.session_state["site_hab_totals"] = None
         st.session_state["by_bank"] = None
@@ -624,9 +626,9 @@ with st.container():
     st.subheader("1) Locate target site")
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        postcode = st.text_input("Postcode (quicker)", value=st.session_state.get("postcode_input", ""), key="postcode_input")
+        postcode = st.text_input("Postcode (quicker)", key="postcode_input")
     with c2:
-        address = st.text_input("Address (if no postcode)", value=st.session_state.get("address_input", ""), key="address_input")
+        address = st.text_input("Address (if no postcode)", key="address_input")
     with c3:
         run_locate = st.button("Locate", key="locate_btn")
 
