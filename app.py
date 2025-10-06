@@ -604,6 +604,28 @@ def enrich_banks_geography(banks_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 backend["Banks"] = enrich_banks_geography(backend["Banks"])
+        def refresh_selected_banks_geography(selected_bank_keys: List[str]):
+    banks_df = backend["Banks"].copy()
+    changed = 0
+    for i, row in banks_df.iterrows():
+        bkey = sstr(row.get("BANK_KEY") or row.get("bank_name") or row.get("bank_id"))
+        if bkey not in set(map(sstr, selected_bank_keys)):
+            continue
+        loc = bank_row_to_latlon(row)
+        if not loc:
+            continue
+        lat, lon, _ = loc
+        try:
+            lpa, nca = get_lpa_nca_for_point(lat, lon)
+            if sstr(row.get("lpa_name")) != lpa or sstr(row.get("nca_name")) != nca:
+                banks_df.at[i, "lpa_name"] = lpa
+                banks_df.at[i, "nca_name"] = nca
+                changed += 1
+        except Exception:
+            pass
+    if changed:
+        backend["Banks"] = make_bank_key_col(banks_df, banks_df)
+
 backend["Banks"] = make_bank_key_col(backend["Banks"], backend["Banks"])
 
 # Validate minimal columns
