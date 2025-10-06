@@ -38,7 +38,8 @@ UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}
 LEDGER_AREA = "area"
 LEDGER_HEDGE = "hedgerow"
 LEDGER_WATER = "watercourse"
-
+NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
+NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
 NET_GAIN_WATERCOURSE_LABEL = "Net Gain (Watercourses)"  # new
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
@@ -196,8 +197,6 @@ def is_hedgerow(name: str) -> bool:
 
 def is_watercourse(name: str) -> bool:
     name_str = sstr(name)
-    
-    # Check UmbrellaType column if backend is loaded
     try:
         if backend and "HabitatCatalog" in backend:
             catalog = backend["HabitatCatalog"]
@@ -208,10 +207,9 @@ def is_watercourse(name: str) -> bool:
                     return umbrella_type == "watercourse"
     except Exception:
         pass
-    
-    # Fallback to text matching
-    name_lower = name_str.lower()
-    return "watercourse" in name_lower or "water" in name_lower
+    # Fallback: narrower textual cues
+    nl = name_str.lower()
+    return any(k in nl for k in ["watercourse", "river", "stream", "ditch"])
 
 def get_hedgerow_habitats(catalog_df: pd.DataFrame) -> List[str]:
     """Get list of hedgerow habitats from catalog using UmbrellaType column"""
@@ -990,8 +988,7 @@ with st.container():
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
-NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
-NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
+
 
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
@@ -2215,7 +2212,8 @@ if run:
 
         # Validate against catalog — allow special Net Gain labels
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h not in [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL]]
+        unknown = [h for h in demand_df["habitat_name"]
+           if h not in cat_names_run and h not in [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL, NET_GAIN_WATERCOURSE_LABEL]]
         if unknown:
             st.error(f"These demand habitats aren't in the catalog: {unknown}")
             st.stop()
@@ -2942,7 +2940,7 @@ if st.session_state.get("optimization_complete", False):
         st.markdown("**🌿 Manual Hedgerow Units**")
         
         # Add Net Gain option to hedgerow choices
-        hedgerow_choices_with_ng = hedgerow_choices + [NET_GAIN_LABEL] if hedgerow_choices else [NET_GAIN_LABEL]
+        hedgerow_choices_with_ng = hedgerow_choices + [NET_GAIN_HEDGEROW_LABEL] if hedgerow_choices else [NET_GAIN_HEDGEROW_LABEL]
         
         to_delete_hedgerow = []
         for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
@@ -3013,7 +3011,7 @@ if st.session_state.get("optimization_complete", False):
         st.markdown("**💧 Manual Watercourse Units**")
         
         # Add Net Gain option to watercourse choices
-        watercourse_choices_with_ng = watercourse_choices + [NET_GAIN_LABEL] if watercourse_choices else [NET_GAIN_LABEL]
+        watercourse_choices_with_ng = watercourse_choices + [NET_GAIN_WATERCOURSE_LABEL] if watercourse_choices else [NET_GAIN_WATERCOURSE_LABEL]
         
         to_delete_watercourse = []
         for idx, row in enumerate(st.session_state.manual_watercourse_rows):
