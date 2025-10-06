@@ -1,4 +1,10 @@
-# app.py — BNG Optimiser (Standalone), v9.12
+# app.py — BNG Optimiser (Standalone), v9.13
+# Changes in v9.13:
+# - Added "Start New Quote" button with comprehensive reset functionality
+# - Implemented automatic map refresh after optimization completes
+# - Ensured financial readout persists across map interactions
+# - Enhanced user experience with clear visual feedback
+#
 # Changes in v9.12:
 # - Fixed map disappearing on optimise
 # - Improved UI responsiveness
