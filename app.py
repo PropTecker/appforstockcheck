@@ -604,7 +604,7 @@ def enrich_banks_geography(banks_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 backend["Banks"] = enrich_banks_geography(backend["Banks"])
-        def refresh_selected_banks_geography(selected_bank_keys: List[str]):
+def refresh_selected_banks_geography(selected_bank_keys: List[str]):
     banks_df = backend["Banks"].copy()
     changed = 0
     for i, row in banks_df.iterrows():
