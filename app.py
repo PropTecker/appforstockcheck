@@ -431,22 +431,56 @@ def tier_for_bank(bank_lpa: str, bank_nca: str,
                   lpa_neigh: List[str], nca_neigh: List[str],
                   lpa_neigh_norm: Optional[List[str]] = None,
                   nca_neigh_norm: Optional[List[str]] = None) -> str:
-    b_lpa = norm_name(bank_lpa)
-    b_nca = norm_name(bank_nca)
-    t_lpa_n = norm_name(t_lpa)
-    t_nca_n = norm_name(t_nca)
-    if lpa_neigh_norm is None:
-        lpa_neigh_norm = [norm_name(x) for x in (lpa_neigh or [])]
-    if nca_neigh_norm is None:
-        nca_neigh_norm = [norm_name(x) for x in (nca_neigh or [])]
-    if b_lpa and t_lpa_n and b_lpa == t_lpa_n:
+    """
+    Robust tiering:
+    - Normalises *all* inputs internally (ignores stale/misaligned _norm lists).
+    - Treats 'local' if LPA OR NCA match the target.
+    - Treats 'adjacent' if LPA OR NCA are in the (normalised) neighbour sets.
+    - Otherwise 'far'.
+    """
+
+    def n(s: str) -> str:
+        return norm_name(s)  # your existing normaliser
+
+    # Bank side
+    b_lpa_n = n(bank_lpa)
+    b_nca_n = n(bank_nca)
+
+    # Target side
+    t_lpa_n = n(t_lpa)
+    t_nca_n = n(t_nca)
+
+    # Build normalised neighbour sets *here* (don’t trust passed-in _norm to be aligned)
+    lpa_neigh_set = {n(x) for x in (lpa_neigh or [])}
+    nca_neigh_set = {n(x) for x in (nca_neigh or [])}
+
+    # Local if either axis matches exactly
+    if b_lpa_n and t_lpa_n and b_lpa_n == t_lpa_n:
         return "local"
-    if b_nca and t_nca_n and b_nca == t_nca_n:
+    if b_nca_n and t_nca_n and b_nca_n == t_nca_n:
         return "local"
-    if b_lpa and b_lpa in lpa_neigh_norm:
+
+    # Adjacent if either axis is in the neighbour set
+    if b_lpa_n and b_lpa_n in lpa_neigh_set:
         return "adjacent"
-    if b_nca and b_nca in nca_neigh_norm:
+    if b_nca_n and b_nca_n in nca_neigh_set:
         return "adjacent"
+
+    # Last-ditch: sometimes bank LPA is an older label; try a soft containment check
+    def soft_match(bank_val: str, neighs: List[str]) -> bool:
+        if not bank_val:
+            return False
+        bv = n(bank_val)
+        for nn in neighs or []:
+            if bv and (bv in n(nn) or n(nn) in bv):
+                return True
+        return False
+
+    if soft_match(bank_lpa, lpa_neigh):
+        return "adjacent"
+    if soft_match(bank_nca, nca_neigh):
+        return "adjacent"
+
     return "far"
 
 def select_contract_size(total_units: float, present: List[str]) -> str:
