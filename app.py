@@ -141,6 +141,11 @@ def reset_quote():
 
 init_session_state()
 
+# Check if we need to refresh the map after optimization (MUST be very early in script)
+if st.session_state.get("needs_map_refresh", False):
+    st.session_state["needs_map_refresh"] = False
+    st.rerun()
+
 # ================= Safe strings =================
 def sstr(x) -> str:
     if x is None:
@@ -855,11 +860,6 @@ def build_results_map(alloc_df: pd.DataFrame):
     # Add layer control
     folium.LayerControl(collapsed=False).add_to(fmap)
     return fmap
-
-# Check if we need to refresh the map after optimization (BEFORE map renders)
-if st.session_state.get("needs_map_refresh", False):
-    st.session_state["needs_map_refresh"] = False
-    st.rerun()
 
 # ================= Map Container (FIXED VERSION) =================
 with st.container():
@@ -2243,16 +2243,9 @@ if run:
             f"Grand total: **£{total_with_admin:,.0f}**"
         )
 
-        # ========== SHOW ALL RESULTS (NO RERUN) ==========
+        # ========== PROCESS RESULTS FOR PERSISTENCE (NO INLINE DISPLAY) ==========
+        # Calculate summary data and save to session state - displayed in persistent section below
         
-        st.markdown("#### Allocation detail")
-        st.dataframe(alloc_df, use_container_width=True)
-        if "price_source" in alloc_df.columns:
-            st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
-
-        # ---------- Site/Habitat totals (effective units, with accurate split pricing) ----------
-        st.markdown("#### Site/Habitat totals (effective units)")
-
         MULT = {"local": 1.0, "adjacent": 1.33, "far": 2.0}
 
         def split_paired_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -2298,7 +2291,7 @@ if run:
             return pd.DataFrame(rows)
 
         expanded_alloc = split_paired_rows(alloc_df.copy())
-        expanded_alloc["proximity"] = expanded_alloc.get("tier", "").map(sstr)  # same value
+        expanded_alloc["proximity"] = expanded_alloc.get("tier", "").map(sstr)
         expanded_alloc["effective_units"] = expanded_alloc.apply(
             lambda r: float(r["units_supplied"]) * MULT.get(sstr(r["proximity"]).lower(), 1.0), axis=1
         )
@@ -2317,30 +2310,24 @@ if run:
             "units_supplied","effective_units","avg_unit_price","avg_effective_unit_price","cost"
         ]]
 
-        st.dataframe(site_hab_totals, use_container_width=True, hide_index=True)
-
-        # ---------- By bank / by habitat ----------
-        st.markdown("#### By bank")
+        # Calculate by bank summary
         by_bank = alloc_df.groupby(["BANK_KEY","bank_name","bank_id"], as_index=False).agg(
             units_supplied=("units_supplied","sum"),
             cost=("cost","sum")
         ).sort_values("cost", ascending=False)
-        st.dataframe(by_bank, use_container_width=True)
 
-        st.markdown("#### By habitat (supply)")
+        # Calculate by habitat summary
         by_hab = alloc_df.groupby("supply_habitat", as_index=False).agg(
             units_supplied=("units_supplied","sum"),
             cost=("cost","sum")
         )
-        st.dataframe(by_hab, use_container_width=True)
 
-        st.markdown("#### Order summary (with admin fee)")
+        # Create order summary
         summary_df = pd.DataFrame([
             {"Item": "Subtotal (units)", "Amount £": round(total_cost, 2)},
             {"Item": "Admin fee",        "Amount £": round(ADMIN_FEE_GBP, 2)},
             {"Item": "Grand total",      "Amount £": round(total_with_admin, 2)},
         ])
-        st.dataframe(summary_df, hide_index=True, use_container_width=True)
         
         # Save summary data to session state for persistence
         st.session_state["site_hab_totals"] = site_hab_totals.copy()
