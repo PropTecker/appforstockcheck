@@ -98,46 +98,62 @@ def init_session_state():
 
 def reset_quote():
     """Reset all quote-related session state to start a new quote"""
-    st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
-    st.session_state._next_row_id = 2
-    st.session_state.target_lpa_name = ""
-    st.session_state.target_nca_name = ""
-    st.session_state.lpa_neighbors = []
-    st.session_state.nca_neighbors = []
-    st.session_state.lpa_neighbors_norm = []
-    st.session_state.nca_neighbors_norm = []
-    st.session_state.target_lat = None
-    st.session_state.target_lon = None
-    st.session_state.lpa_geojson = None
-    st.session_state.nca_geojson = None
-    st.session_state.last_alloc_df = None
-    st.session_state.bank_geo_cache = {}
-    st.session_state.bank_catchment_geo = {}
-    st.session_state.optimization_complete = False
-    st.session_state.manual_hedgerow_rows = []
-    st.session_state.manual_watercourse_rows = []
-    st.session_state._next_manual_hedgerow_id = 1
-    st.session_state._next_manual_watercourse_id = 1
-    st.session_state.email_client_name = "INSERT NAME"
-    st.session_state.email_ref_number = "BNG00XXX"
-    st.session_state.email_location = "INSERT LOCATION"
-    st.session_state.map_version += 1
-    # Clear location input fields
-    st.session_state.postcode_input = ""
-    st.session_state.address_input = ""
-    # Clear summary dataframes
-    if "site_hab_totals" in st.session_state:
-        st.session_state.site_hab_totals = None
-    if "by_bank" in st.session_state:
-        st.session_state.by_bank = None
-    if "by_hab" in st.session_state:
-        st.session_state.by_hab = None
-    if "summary_df" in st.session_state:
-        st.session_state.summary_df = None
-    if "total_cost" in st.session_state:
-        st.session_state.total_cost = None
-    if "contract_size" in st.session_state:
-        st.session_state.contract_size = None
+    try:
+        # First, delete all widget-bound keys for existing demand rows
+        # This must happen BEFORE resetting demand_rows to clear the widget state
+        if "demand_rows" in st.session_state:
+            for row in st.session_state["demand_rows"]:
+                row_id = row.get("id")
+                # Delete habitat selectbox key
+                hab_key = f"hab_{row_id}"
+                if hab_key in st.session_state:
+                    del st.session_state[hab_key]
+                # Delete units number_input key
+                units_key = f"units_{row_id}"
+                if units_key in st.session_state:
+                    del st.session_state[units_key]
+        
+        # Now reset demand_rows data
+        st.session_state["demand_rows"] = [{"id": 1, "habitat_name": "", "units": 0.0}]
+        st.session_state["_next_row_id"] = 2
+        st.session_state["target_lpa_name"] = ""
+        st.session_state["target_nca_name"] = ""
+        st.session_state["lpa_neighbors"] = []
+        st.session_state["nca_neighbors"] = []
+        st.session_state["lpa_neighbors_norm"] = []
+        st.session_state["nca_neighbors_norm"] = []
+        st.session_state["target_lat"] = None
+        st.session_state["target_lon"] = None
+        st.session_state["lpa_geojson"] = None
+        st.session_state["nca_geojson"] = None
+        st.session_state["last_alloc_df"] = None
+        st.session_state["bank_geo_cache"] = {}
+        st.session_state["bank_catchment_geo"] = {}
+        st.session_state["optimization_complete"] = False
+        st.session_state["manual_hedgerow_rows"] = []
+        st.session_state["manual_watercourse_rows"] = []
+        st.session_state["_next_manual_hedgerow_id"] = 1
+        st.session_state["_next_manual_watercourse_id"] = 1
+        st.session_state["email_client_name"] = "INSERT NAME"
+        st.session_state["email_ref_number"] = "BNG00XXX"
+        st.session_state["email_location"] = "INSERT LOCATION"
+        st.session_state["map_version"] = st.session_state.get("map_version", 0) + 1
+        # Clear location input fields by deleting them (widget-bound variables)
+        if "postcode_input" in st.session_state:
+            del st.session_state["postcode_input"]
+        if "address_input" in st.session_state:
+            del st.session_state["address_input"]
+        # Clear summary dataframes
+        st.session_state["site_hab_totals"] = None
+        st.session_state["by_bank"] = None
+        st.session_state["by_hab"] = None
+        st.session_state["summary_df"] = None
+        st.session_state["total_cost"] = None
+        st.session_state["contract_size"] = None
+    except Exception as e:
+        st.error(f"Error resetting quote: {e}")
+        # Re-initialize session state as fallback
+        init_session_state()
 
 init_session_state()
 
@@ -417,15 +433,22 @@ def tier_for_bank(bank_lpa: str, bank_nca: str,
         lpa_neigh_norm = [norm_name(x) for x in (lpa_neigh or [])]
     if nca_neigh_norm is None:
         nca_neigh_norm = [norm_name(x) for x in (nca_neigh or [])]
-    if b_lpa and t_lpa_n and b_lpa == t_lpa_n:
-        return "local"
-    if b_nca and t_nca_n and b_nca == t_nca_n:
-        return "local"
-    if b_lpa and b_lpa in lpa_neigh_norm:
-        return "adjacent"
-    if b_nca and b_nca in nca_neigh_norm:
-        return "adjacent"
-    return "far"
+    
+    # Evaluate LPA axis independently
+    lpa_same = b_lpa and t_lpa_n and b_lpa == t_lpa_n
+    lpa_neighbour = b_lpa and b_lpa in lpa_neigh_norm
+    
+    # Evaluate NCA axis independently  
+    nca_same = b_nca and t_nca_n and b_nca == t_nca_n
+    nca_neighbour = b_nca and b_nca in nca_neigh_norm
+    
+    # Return best (closest) category across both axes
+    if lpa_same or nca_same:
+        return "local"  # Local > Adjacent > Far
+    elif lpa_neighbour or nca_neighbour:
+        return "adjacent"  # Adjacent > Far
+    else:
+        return "far"
 
 def select_contract_size(total_units: float, present: List[str]) -> str:
     tiers = set([sstr(x).lower() for x in present])
@@ -624,9 +647,9 @@ with st.container():
     st.subheader("1) Locate target site")
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        postcode = st.text_input("Postcode (quicker)", value=st.session_state.get("postcode_input", ""), key="postcode_input")
+        postcode = st.text_input("Postcode (quicker)", key="postcode_input")
     with c2:
-        address = st.text_input("Address (if no postcode)", value=st.session_state.get("address_input", ""), key="address_input")
+        address = st.text_input("Address (if no postcode)", key="address_input")
     with c3:
         run_locate = st.button("Locate", key="locate_btn")
 
@@ -1939,7 +1962,6 @@ with left:
 with middle:
     if st.button("🔄 Start New Quote", key="start_new_quote_btn", help="Clear all inputs and start fresh"):
         reset_quote()
-        st.rerun()
 with right:
     if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         st.caption(f"LPA: {st.session_state['target_lpa_name'] or '—'} | NCA: {st.session_state['target_nca_name'] or '—'} | "
@@ -2337,8 +2359,9 @@ if run:
         st.session_state["total_cost"] = total_cost
         st.session_state["contract_size"] = size
         
-        # Trigger map refresh by setting a flag
+        # Trigger immediate map refresh
         st.session_state["needs_map_refresh"] = True
+        st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
@@ -3215,6 +3238,47 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
