@@ -2311,8 +2311,20 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
         
-        # ========== MAP UPDATE NOTICE (NO RERUN) ==========
-        st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
+        # Downloads
+        st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
+                           file_name="allocation.csv", mime="text/csv")
+        st.download_button("Download site/habitat totals (CSV)",
+                           data=df_to_csv_bytes(site_hab_totals),
+                           file_name="site_habitat_totals_effective_units.csv",
+                           mime="text/csv")
+        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
+                           file_name="allocation_by_bank.csv", mime="text/csv")
+        
+        # Automatically refresh to update map with results
+        st.info("🗺️ Refreshing to display results on map...", icon="↻")
+        time.sleep(1.5)  # Brief delay so users see the results
+        st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
