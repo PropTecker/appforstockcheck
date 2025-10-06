@@ -809,7 +809,7 @@ def build_results_map(alloc_df: pd.DataFrame):
             if bgeo.get("lpa_gj"):
                 folium.GeoJson(
                     bgeo["lpa_gj"],
-                    name=f"🏢 {bank_display_name} - Catchment Area",
+                    name=f"🏢 {bank_display_name} - LPA",
                     style_function=lambda x: {
                         "fillColor": "green", 
                         "color": "green",  # Green border
@@ -825,7 +825,7 @@ def build_results_map(alloc_df: pd.DataFrame):
             if bgeo.get("nca_gj"):
                 folium.GeoJson(
                     bgeo["nca_gj"],
-                    name=f"🌿 {bank_display_name} - Extended Catchment",
+                    name=f"🌿 {bank_display_name} - NCA",
                     style_function=lambda x: {
                         "fillColor": "green", 
                         "color": "green",  # Green border
