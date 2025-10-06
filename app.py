@@ -77,12 +77,42 @@ def init_session_state():
         "manual_hedgerow_rows": [],
         "manual_watercourse_rows": [],
         "_next_manual_hedgerow_id": 1,
-        "_next_manual_watercourse_id": 1
+        "_next_manual_watercourse_id": 1,
+        "email_client_name": "INSERT NAME",
+        "email_ref_number": "BNG00XXX",
+        "email_location": "INSERT LOCATION"
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+def reset_quote():
+    """Reset all quote-related session state to start a new quote"""
+    st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
+    st.session_state._next_row_id = 2
+    st.session_state.target_lpa_name = ""
+    st.session_state.target_nca_name = ""
+    st.session_state.lpa_neighbors = []
+    st.session_state.nca_neighbors = []
+    st.session_state.lpa_neighbors_norm = []
+    st.session_state.nca_neighbors_norm = []
+    st.session_state.target_lat = None
+    st.session_state.target_lon = None
+    st.session_state.lpa_geojson = None
+    st.session_state.nca_geojson = None
+    st.session_state.last_alloc_df = None
+    st.session_state.bank_geo_cache = {}
+    st.session_state.bank_catchment_geo = {}
+    st.session_state.optimization_complete = False
+    st.session_state.manual_hedgerow_rows = []
+    st.session_state.manual_watercourse_rows = []
+    st.session_state._next_manual_hedgerow_id = 1
+    st.session_state._next_manual_watercourse_id = 1
+    st.session_state.email_client_name = "INSERT NAME"
+    st.session_state.email_ref_number = "BNG00XXX"
+    st.session_state.email_location = "INSERT LOCATION"
+    st.session_state.map_version += 1
 
 init_session_state()
 
@@ -1872,9 +1902,13 @@ def optimise(demand_df: pd.DataFrame,
 
 # ================= Run optimiser UI =================
 st.subheader("3) Run optimiser")
-left, right = st.columns([1,1])
+left, middle, right = st.columns([1,1,1])
 with left:
     run = st.button("Optimise now", type="primary", disabled=demand_df.empty, key="optimise_btn")
+with middle:
+    if st.button("🔄 Start New Quote", key="start_new_quote_btn", help="Clear all inputs and start fresh"):
+        reset_quote()
+        st.rerun()
 with right:
     if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         st.caption(f"LPA: {st.session_state['target_lpa_name'] or '—'} | NCA: {st.session_state['target_nca_name'] or '—'} | "
