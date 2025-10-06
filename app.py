@@ -439,22 +439,15 @@ def tier_for_bank(bank_lpa: str, bank_nca: str,
         lpa_neigh_norm = [norm_name(x) for x in (lpa_neigh or [])]
     if nca_neigh_norm is None:
         nca_neigh_norm = [norm_name(x) for x in (nca_neigh or [])]
-    
-    # Evaluate LPA axis independently
-    lpa_same = b_lpa and t_lpa_n and b_lpa == t_lpa_n
-    lpa_neighbour = b_lpa and b_lpa in lpa_neigh_norm
-    
-    # Evaluate NCA axis independently  
-    nca_same = b_nca and t_nca_n and b_nca == t_nca_n
-    nca_neighbour = b_nca and b_nca in nca_neigh_norm
-    
-    # Return best (closest) category across both axes
-    if lpa_same or nca_same:
-        return "local"  # Local > Adjacent > Far
-    elif lpa_neighbour or nca_neighbour:
-        return "adjacent"  # Adjacent > Far
-    else:
-        return "far"
+    if b_lpa and t_lpa_n and b_lpa == t_lpa_n:
+        return "local"
+    if b_nca and t_nca_n and b_nca == t_nca_n:
+        return "local"
+    if b_lpa and b_lpa in lpa_neigh_norm:
+        return "adjacent"
+    if b_nca and b_nca in nca_neigh_norm:
+        return "adjacent"
+    return "far"
 
 def select_contract_size(total_units: float, present: List[str]) -> str:
     tiers = set([sstr(x).lower() for x in present])
