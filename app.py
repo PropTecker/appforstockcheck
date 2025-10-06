@@ -1934,7 +1934,6 @@ with left:
 with middle:
     if st.button("🔄 Start New Quote", key="start_new_quote_btn", help="Clear all inputs and start fresh"):
         reset_quote()
-        st.rerun()
 with right:
     if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         st.caption(f"LPA: {st.session_state['target_lpa_name'] or '—'} | NCA: {st.session_state['target_nca_name'] or '—'} | "
