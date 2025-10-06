@@ -29,7 +29,11 @@ ADMIN_FEE_GBP = 500.0
 SINGLE_BANK_SOFT_PCT = 0.01
 MAP_CATCHMENT_ALPHA = 0.03
 UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}
+LEDGER_AREA = "area"
+LEDGER_HEDGE = "hedgerow"
+LEDGER_WATER = "watercourse"
 
+NET_GAIN_WATERCOURSE_LABEL = "Net Gain (Watercourses)"  # new
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
 NCA_URL = ("https://services.arcgis.com/JJzESW51TqeY9uat/arcgis/rest/services/"
@@ -69,7 +73,11 @@ def init_session_state():
         "bank_catchment_geo": {},
         "demand_rows": [{"id": 1, "habitat_name": "", "units": 0.0}],
         "_next_row_id": 2,
-        "optimization_complete": False
+        "optimization_complete": False,
+        "manual_hedgerow_rows": [],
+        "manual_watercourse_rows": [],
+        "_next_manual_hedgerow_id": 1,
+        "_next_manual_watercourse_id": 1
     }
     
     for key, value in defaults.items():
@@ -95,7 +103,66 @@ def norm_name(s: str) -> str:
     return t
 
 def is_hedgerow(name: str) -> bool:
-    return "hedgerow" in sstr(name).lower()
+    name_str = sstr(name)
+    # Check if it's the hedgerow net gain label
+    if name_str == "Net Gain (Hedgerows)":
+        return True
+    
+    # Check UmbrellaType column if backend is loaded
+    try:
+        if backend and "HabitatCatalog" in backend:
+            catalog = backend["HabitatCatalog"]
+            if "UmbrellaType" in catalog.columns:
+                match = catalog[catalog["habitat_name"].astype(str).str.strip() == name_str]
+                if not match.empty:
+                    umbrella_type = sstr(match.iloc[0]["UmbrellaType"]).lower()
+                    return umbrella_type == "hedgerow"
+    except Exception:
+        pass
+    
+    # Fallback to text matching
+    return "hedgerow" in name_str.lower()
+
+def is_watercourse(name: str) -> bool:
+    name_str = sstr(name)
+    
+    # Check UmbrellaType column if backend is loaded
+    try:
+        if backend and "HabitatCatalog" in backend:
+            catalog = backend["HabitatCatalog"]
+            if "UmbrellaType" in catalog.columns:
+                match = catalog[catalog["habitat_name"].astype(str).str.strip() == name_str]
+                if not match.empty:
+                    umbrella_type = sstr(match.iloc[0]["UmbrellaType"]).lower()
+                    return umbrella_type == "watercourse"
+    except Exception:
+        pass
+    
+    # Fallback to text matching
+    name_lower = name_str.lower()
+    return "watercourse" in name_lower or "water" in name_lower
+
+def get_hedgerow_habitats(catalog_df: pd.DataFrame) -> List[str]:
+    """Get list of hedgerow habitats from catalog using UmbrellaType column"""
+    if "UmbrellaType" in catalog_df.columns:
+        # Use the UmbrellaType column to filter
+        hedgerow_df = catalog_df[catalog_df["UmbrellaType"].astype(str).str.strip().str.lower() == "hedgerow"]
+        return sorted([sstr(x) for x in hedgerow_df["habitat_name"].dropna().unique().tolist()])
+    else:
+        # Fallback to text matching if column doesn't exist
+        all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
+        return sorted([h for h in all_habitats if is_hedgerow(h)])
+
+def get_watercourse_habitats(catalog_df: pd.DataFrame) -> List[str]:
+    """Get list of watercourse habitats from catalog using UmbrellaType column"""
+    if "UmbrellaType" in catalog_df.columns:
+        # Use the UmbrellaType column to filter
+        watercourse_df = catalog_df[catalog_df["UmbrellaType"].astype(str).str.strip().str.lower() == "watercourse"]
+        return sorted([sstr(x) for x in watercourse_df["habitat_name"].dropna().unique().tolist()])
+    else:
+        # Fallback to text matching if column doesn't exist
+        all_habitats = [sstr(x) for x in catalog_df["habitat_name"].dropna().unique().tolist()]
+        return sorted([h for h in all_habitats if is_watercourse(h)])
 
 # ================= Login =================
 DEFAULT_USER = "WC0323"
@@ -192,6 +259,28 @@ def add_geojson_layer(fmap, geojson: Dict[str, Any], name: str, color: str, weig
         ).add_to(fmap)
     except Exception:
         pass
+
+# --- Ledger helpers ---
+def get_umbrella_for(hab_name: str, catalog: pd.DataFrame) -> str:
+    """Return 'hedgerow' | 'watercourse' | 'area' for a habitat name using UmbrellaType; 
+       also handles special Net Gain labels."""
+    h = sstr(hab_name)
+    if not h:
+        return LEDGER_AREA
+    if h == NET_GAIN_HEDGEROW_LABEL:
+        return LEDGER_HEDGE
+    if h == NET_GAIN_WATERCOURSE_LABEL:
+        return LEDGER_WATER
+    # Lookup in catalog
+    m = catalog[catalog["habitat_name"].astype(str).str.strip() == h]
+    umb = sstr(m.iloc[0]["UmbrellaType"]) if not m.empty and "UmbrellaType" in m.columns else ""
+    umb = umb.lower()
+    if umb == LEDGER_HEDGE:
+        return LEDGER_HEDGE
+    if umb == LEDGER_WATER:
+        return LEDGER_WATER
+    return LEDGER_AREA
+
 
 # ================= Geocoding / lookups =================
 def get_postcode_info(pc: str) -> Tuple[float, float, str]:
@@ -457,10 +546,10 @@ def normalise_pricing(pr_df: pd.DataFrame) -> pd.DataFrame:
     if "broader_type" not in df.columns: df["broader_type"] = ""
     if "distinctiveness_name" not in df.columns: df["distinctiveness_name"] = ""
     df["habitat_name"] = df["habitat_name"].astype(str).str.strip()
-    df = df[~df["habitat_name"].map(is_hedgerow)].copy()
+    # NOTE: Do NOT filter out hedgerows here! They need to be available for hedgerow optimization
     return df
 
-backend["Stock"] = backend["Stock"][~backend["Stock"]["habitat_name"].map(is_hedgerow)].copy()
+# NOTE: Do NOT filter hedgerows from backend globally - they're needed for hedgerow optimization
 backend["Pricing"] = normalise_pricing(backend["Pricing"])
 
 # Distinctiveness mapping
@@ -788,10 +877,11 @@ with st.container():
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
 NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
+NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
 
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
-)
+) + [NET_GAIN_HEDGEROW_LABEL, NET_GAIN_WATERCOURSE_LABEL]  # add watercourses NG
 
 with st.container(border=True):
     st.markdown("**Add habitats one by one** (type to search the catalog):")
@@ -799,9 +889,14 @@ with st.container(border=True):
     for idx, row in enumerate(st.session_state.demand_rows):
         c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
         with c1:
+            # Don't autopopulate - use None as default index if habitat is empty
+            default_idx = None
+            if row["habitat_name"] and row["habitat_name"] in HAB_CHOICES:
+                default_idx = HAB_CHOICES.index(row["habitat_name"])
+            
             st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
                 "Habitat", HAB_CHOICES,
-                index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                index=default_idx,
                 key=f"hab_{row['id']}",
                 help="Start typing to filter",
             )
@@ -817,27 +912,46 @@ with st.container(border=True):
         st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
         st.rerun()
 
-    cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
+    cc1, cc2, cc3, cc4, cc5 = st.columns([0.22, 0.22, 0.22, 0.22, 0.12])
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                {"id": st.session_state._next_row_id, "habitat_name": "", "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
     with cc2:
         if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
-                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
+                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any area habitat)."):
             st.session_state.demand_rows.append(
                 {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
     with cc3:
-        if st.button("🧹 Clear all", key="clear_all_btn"):
-            st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
-            st.session_state._next_row_id = 2
+        if st.button("➕ Net Gain (Hedgerows)", key="add_ng_hedge_btn",
+                     help="Adds a 'Net Gain (Hedgerows)' line. Can be fulfilled using any hedgerow habitat credit."):
+            st.session_state.demand_rows.append(
+                {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_HEDGEROW_LABEL, "units": 0.0}
+            )
+            st.session_state._next_row_id += 1
             st.rerun()
+    with cc4:
+        if st.button("➕ Net Gain (Watercourses)", key="add_ng_water_btn",
+                     help="Adds a 'Net Gain (Watercourses)' line. Can be fulfilled using any watercourse habitat credit."):
+            st.session_state.demand_rows.append(
+                {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_WATERCOURSE_LABEL, "units": 0.0}
+            )
+            st.session_state._next_row_id += 1
+            st.rerun()
+    with cc5:
+        if st.button("🧹 Clear all", key="clear_all_btn"):
+            # Reset existing rows to empty state (preserves row count & IDs)
+            for row in st.session_state.demand_rows:
+                row["habitat_name"] = ""
+                row["units"] = 0.0
+            st.rerun()
+
 
 total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
 st.metric("Total units", f"{total_units:.2f}")
@@ -847,19 +961,19 @@ demand_df = pd.DataFrame(
      for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
 )
 
-# Hedgerow guard
-if not demand_df.empty:
-    banned = [h for h in demand_df["habitat_name"] if is_hedgerow(h)]
-    if banned:
-        st.error("Hedgerow units cannot be traded in this optimiser. Remove these line(s): " + ", ".join(sorted(set(banned))))
-        st.stop()
-
+# Display demand (hedgerow units are now supported)
 if not demand_df.empty:
     st.dataframe(demand_df, use_container_width=True, hide_index=True)
+    
+    # Show info if hedgerow units are included
+    hedgerow_units = [h for h in demand_df["habitat_name"] if is_hedgerow(h)]
+    if hedgerow_units:
+        st.info(f"ℹ️ Hedgerow units detected: {', '.join(sorted(set(hedgerow_units)))}. These will be optimized using hedgerow-specific trading rules.")
 else:
     st.info("Add at least one habitat and units to continue.", icon="ℹ️")
 
 # ================= Legality =================
+
 def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local, explicit_rule: bool) -> bool:
     if explicit_rule:
         return True
@@ -882,6 +996,69 @@ def enforce_catalog_rules_official(demand_row, supply_row, dist_levels_map_local
         higher_distinctiveness = (s_val > d_val)
         return bool(same_group or higher_distinctiveness)
     return sh == dh  # High / Very High exactly like-for-like
+
+def enforce_hedgerow_rules(demand_row, supply_row, dist_levels_map_local) -> bool:
+    """
+    Hedgerow trading rules:
+    - Very High: Same habitat required
+    - High: Like for like or better
+    - Medium: Same distinctiveness or better habitat required
+    - Low: Same distinctiveness or better habitat required
+    - Very Low: Same distinctiveness or better habitat required
+    - Net Gain: Can be covered using anything
+    """
+    dh = sstr(demand_row.get("habitat_name"))
+    sh = sstr(supply_row.get("habitat_name"))
+    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
+    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
+    d_key = d_dist_name.lower()
+    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
+    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
+    
+    # Net Gain (both regular and hedgerow) can be covered by anything
+    if dh == NET_GAIN_LABEL or dh == "Net Gain (Hedgerows)":
+        return True
+    
+    # Very High - Same habitat required
+    if d_key in ["very high", "v.high"]:
+        return sh == dh
+    
+    # High - Like for like or better (same habitat or higher distinctiveness)
+    if d_key == "high":
+        return (sh == dh) or (s_val > d_val)
+    
+    # Medium, Low, Very Low - Same distinctiveness or better
+    if d_key in ["medium", "low", "very low", "v.low"]:
+        return s_val >= d_val
+    
+    # Default: allow it
+    return True
+
+def enforce_watercourse_rules(demand_row, supply_row, dist_levels_map_local) -> bool:
+    """
+    Watercourse trading rules (mirrors hedgerow approach until you specify otherwise):
+    - Very High: Same habitat required
+    - High: Like for like or better (same habitat or higher distinctiveness)
+    - Medium, Low, Very Low: Same distinctiveness or better
+    - Net Gain (Watercourses): Anything within watercourse ledger
+    """
+    dh = sstr(demand_row.get("habitat_name"))
+    sh = sstr(supply_row.get("habitat_name"))
+    d_dist_name = sstr(demand_row.get("distinctiveness_name"))
+    s_dist_name = sstr(supply_row.get("distinctiveness_name"))
+    d_key = d_dist_name.lower()
+    d_val = dist_levels_map_local.get(d_dist_name, dist_levels_map_local.get(d_key, -1e9))
+    s_val = dist_levels_map_local.get(s_dist_name, dist_levels_map_local.get(s_dist_name.lower(), -1e-9))
+
+    if dh == NET_GAIN_WATERCOURSE_LABEL:
+        return True
+    if d_key in ["very high", "v.high"]:
+        return sh == dh
+    if d_key == "high":
+        return (sh == dh) or (s_val > d_val)
+    if d_key in ["medium", "low", "very low", "v.low"]:
+        return s_val >= d_val
+    return True
 
 # ================= Options builder =================
 def select_size_for_demand(demand_df: pd.DataFrame, pricing_df: pd.DataFrame) -> str:
@@ -1003,6 +1180,10 @@ def prepare_options(demand_df: pd.DataFrame,
 
     for di, drow in demand_df.iterrows():
         dem_hab = sstr(drow["habitat_name"])
+        
+        # Skip hedgerow demand in area habitat options (hedgerows handled separately)
+        if is_hedgerow(dem_hab):
+            continue
 
         if dem_hab == NET_GAIN_LABEL:
             d_broader = ""
@@ -1142,19 +1323,345 @@ def prepare_options(demand_df: pd.DataFrame,
 
     return options, stock_caps, stock_bankkey
 
+def prepare_hedgerow_options(demand_df: pd.DataFrame,
+                              chosen_size: str,
+                              target_lpa: str, target_nca: str,
+                              lpa_neigh: List[str], nca_neigh: List[str],
+                              lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[List[dict], Dict[str, float], Dict[str, str]]:
+    """Prepare hedgerow unit options using specific hedgerow trading rules"""
+    Banks = backend["Banks"].copy()
+    Pricing = backend["Pricing"].copy()
+    Catalog = backend["HabitatCatalog"].copy()
+    Stock = backend["Stock"].copy()
+    
+    for df, cols in [
+        (Banks, ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name"]),
+        (Catalog, ["habitat_name","broader_type","distinctiveness_name"]),
+        (Stock, ["habitat_name","stock_id","bank_id","quantity_available"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price"])
+    ]:
+        if not df.empty:
+            for c in cols:
+                if c in df.columns:
+                    df[c] = df[c].map(sstr)
+    
+    Stock = make_bank_key_col(Stock, Banks)
+    
+    # Filter for ONLY hedgerow habitats
+    # Ensure bank_name is available from Banks
+    banks_cols = ["bank_id"]
+    for col in ["bank_name", "lpa_name", "nca_name"]:
+        if col in Banks.columns:
+            banks_cols.append(col)
+    
+    stock_full = Stock.merge(
+        Banks[banks_cols].drop_duplicates(),
+        on="bank_id", how="left"
+    ).merge(Catalog, on="habitat_name", how="left")
+    
+    # Ensure bank_name exists (fallback to BANK_KEY if not present)
+    if "bank_name" not in stock_full.columns:
+        if "BANK_KEY" in stock_full.columns:
+            stock_full["bank_name"] = stock_full["BANK_KEY"]
+        else:
+            stock_full["bank_name"] = stock_full["bank_id"]
+    
+    stock_full = stock_full[stock_full["habitat_name"].map(is_hedgerow)].copy()
+    
+    pricing_cs = Pricing[Pricing["contract_size"] == chosen_size].copy()
+    pricing_enriched = pricing_cs.merge(
+        Catalog[["habitat_name","broader_type","distinctiveness_name"]],
+        on="habitat_name", how="left"
+    )
+    pricing_enriched = pricing_enriched[pricing_enriched["habitat_name"].map(is_hedgerow)].copy()
+    
+    options = []
+    stock_caps = {}
+    stock_bankkey = {}
+    
+    for demand_idx, demand_row in demand_df.iterrows():
+        dem_hab = sstr(demand_row.get("habitat_name"))
+        
+        # Skip non-hedgerow demand (but include hedgerow net gain)
+        if not is_hedgerow(dem_hab):
+            continue
+        
+        demand_units = float(demand_row.get("units_required", 0.0))
+        if demand_units <= 0:
+            continue
+        
+        # Get demand distinctiveness
+        if dem_hab == "Net Gain (Hedgerows)":
+            demand_dist = "Low"  # Hedgerow Net Gain trades like Low for hedgerows
+            demand_broader = ""
+        else:
+            cat_match = Catalog[Catalog["habitat_name"] == dem_hab]
+            if cat_match.empty:
+                continue
+            demand_dist = sstr(cat_match.iloc[0]["distinctiveness_name"])
+            demand_broader = sstr(cat_match.iloc[0]["broader_type"])
+        
+        demand_cat_row = pd.Series({
+            "habitat_name": dem_hab,
+            "distinctiveness_name": demand_dist,
+            "broader_type": demand_broader
+        })
+        
+        # Find all eligible supply habitats
+        for _, supply_row in stock_full.iterrows():
+            supply_hab = sstr(supply_row["habitat_name"])
+            
+            # Check hedgerow trading rules
+            if not enforce_hedgerow_rules(demand_cat_row, supply_row, dist_levels_map):
+                continue
+            
+            bank_key = sstr(supply_row["BANK_KEY"])
+            stock_id = sstr(supply_row["stock_id"])
+            qty_avail = float(supply_row.get("quantity_available", 0.0))
+            
+            if qty_avail <= 0:
+                continue
+            
+            tier = tier_for_bank(
+                sstr(supply_row.get("lpa_name")), sstr(supply_row.get("nca_name")),
+                target_lpa, target_nca,
+                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+            )
+            
+            # Find price
+            pr_match = pricing_enriched[
+                (pricing_enriched["BANK_KEY"] == bank_key) &
+                (pricing_enriched["tier"] == tier) &
+                (pricing_enriched["habitat_name"] == supply_hab)
+            ]
+            
+            if pr_match.empty:
+                # Try to find any price for this bank/tier as fallback
+                pr_match = pricing_enriched[
+                    (pricing_enriched["BANK_KEY"] == bank_key) &
+                    (pricing_enriched["tier"] == tier)
+                ]
+                if pr_match.empty:
+                    continue
+                price = float(pr_match.iloc[0]["price"])
+            else:
+                price = float(pr_match.iloc[0]["price"])
+            
+            options.append({
+                "demand_idx": demand_idx,
+                "demand_habitat": dem_hab,
+                "supply_habitat": supply_hab,
+                "bank_id": sstr(supply_row["bank_id"]),
+                "bank_name": sstr(supply_row["bank_name"]),
+                "BANK_KEY": bank_key,
+                "stock_id": stock_id,
+                "tier": tier,
+                "unit_price": price,
+                "cost_per_unit": price,
+                "stock_use": {stock_id: 1.0},
+                "type": "normal",          # <-- add this
+                "proximity": tier   
+            })
+            
+            stock_caps[stock_id] = qty_avail
+            stock_bankkey[stock_id] = bank_key
+    
+    return options, stock_caps, stock_bankkey
+
+# --- Watercourse options builder (ledger-scoped) ---
+def prepare_watercourse_options(demand_df: pd.DataFrame,
+                                chosen_size: str,
+                                target_lpa: str, target_nca: str,
+                                lpa_neigh: List[str], nca_neigh: List[str],
+                                lpa_neigh_norm: List[str], nca_neigh_norm: List[str]
+                                ) -> Tuple[List[dict], Dict[str, float], Dict[str, str]]:
+    """Build candidate options for watercourse ledger using UmbrellaType='watercourse'."""
+    Banks = backend["Banks"].copy()
+    Pricing = backend["Pricing"].copy()
+    Catalog = backend["HabitatCatalog"].copy()
+    Stock = backend["Stock"].copy()
+
+    # Normalise strings
+    for df, cols in [
+        (Banks,   ["bank_id","bank_name","BANK_KEY","lpa_name","nca_name"]),
+        (Catalog, ["habitat_name","broader_type","distinctiveness_name","UmbrellaType"]),
+        (Stock,   ["habitat_name","stock_id","bank_id","quantity_available","BANK_KEY"]),
+        (Pricing, ["habitat_name","contract_size","tier","bank_id","BANK_KEY","price"])
+    ]:
+        if not df.empty:
+            for c in cols:
+                if c in df.columns:
+                    df[c] = df[c].map(sstr)
+
+    # Ensure BANK_KEY exists on Stock
+    Stock = make_bank_key_col(Stock, Banks)
+
+    # Keep only watercourse habitats by UmbrellaType
+    wc_catalog = Catalog[Catalog["UmbrellaType"].astype(str).str.lower() == "watercourse"]
+    wc_habs = set(wc_catalog["habitat_name"].astype(str))
+
+    stock_full = (
+        Stock[Stock["habitat_name"].isin(wc_habs)]
+        .merge(Banks[["bank_id","bank_name","lpa_name","nca_name"]].drop_duplicates(),
+               on="bank_id", how="left")
+        .merge(Catalog[["habitat_name","broader_type","distinctiveness_name","UmbrellaType"]],
+               on="habitat_name", how="left")
+    )
+
+    pricing_enriched = (
+        Pricing[(Pricing["contract_size"] == chosen_size) & (Pricing["habitat_name"].isin(wc_habs))]
+        .merge(Catalog[["habitat_name","broader_type","distinctiveness_name","UmbrellaType"]],
+               on="habitat_name", how="left")
+    )
+
+    options: List[dict] = []
+    stock_caps: Dict[str, float] = {}
+    stock_bankkey: Dict[str, str] = {}
+
+    for demand_idx, demand_row in demand_df.iterrows():
+        dem_hab = sstr(demand_row.get("habitat_name"))
+
+        # Only handle watercourse demands (including NG watercourses)
+        # Uses UmbrellaType to decide ledger
+        if "UmbrellaType" in Catalog.columns:
+            if dem_hab != NET_GAIN_WATERCOURSE_LABEL:
+                m = Catalog[Catalog["habitat_name"].astype(str).str.strip() == dem_hab]
+                umb = sstr(m.iloc[0]["UmbrellaType"]).lower() if not m.empty else ""
+                if umb != "watercourse":
+                    continue
+        else:
+            # Fallback: text heuristic (not ideal, but keeps behavior if column is missing)
+            if dem_hab != NET_GAIN_WATERCOURSE_LABEL and not is_watercourse(dem_hab):
+                continue
+
+        demand_units = float(demand_row.get("units_required", 0.0))
+        if demand_units <= 0:
+            continue
+
+        if dem_hab == NET_GAIN_WATERCOURSE_LABEL:
+            demand_dist = "Low"     # NG trades like Low within this ledger
+            demand_broader = ""
+        else:
+            cat_match = Catalog[Catalog["habitat_name"] == dem_hab]
+            if cat_match.empty:
+                continue
+            demand_dist = sstr(cat_match.iloc[0]["distinctiveness_name"])
+            demand_broader = sstr(cat_match.iloc[0]["broader_type"])
+
+        demand_cat_row = pd.Series({
+            "habitat_name": dem_hab,
+            "distinctiveness_name": demand_dist,
+            "broader_type": demand_broader
+        })
+
+        for _, supply_row in stock_full.iterrows():
+            supply_hab = sstr(supply_row["habitat_name"])
+            if supply_hab not in wc_habs:
+                continue
+
+            # Ledger-specific rule check
+            if not enforce_watercourse_rules(demand_cat_row, supply_row, dist_levels_map):
+                continue
+
+            bank_key = sstr(supply_row["BANK_KEY"])
+            stock_id = sstr(supply_row["stock_id"])
+            qty_avail = float(supply_row.get("quantity_available", 0.0))
+            if qty_avail <= 0:
+                continue
+
+            tier = tier_for_bank(
+                sstr(supply_row.get("lpa_name")), sstr(supply_row.get("nca_name")),
+                target_lpa, target_nca,
+                lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+            )
+
+            # Find exact price, else fallback to any watercourse price in same bank/tier
+            pr_match = pricing_enriched[
+                (pricing_enriched["BANK_KEY"] == bank_key) &
+                (pricing_enriched["tier"] == tier) &
+                (pricing_enriched["habitat_name"] == supply_hab)
+            ]
+            if pr_match.empty:
+                pr_match = pricing_enriched[
+                    (pricing_enriched["BANK_KEY"] == bank_key) &
+                    (pricing_enriched["tier"] == tier)
+                ]
+                if pr_match.empty:
+                    continue
+                price = float(pr_match.iloc[0]["price"])
+            else:
+                price = float(pr_match.iloc[0]["price"])
+
+            options.append({
+                "demand_idx": demand_idx,
+                "demand_habitat": dem_hab,
+                "supply_habitat": supply_hab,
+                "bank_id": sstr(supply_row["bank_id"]),
+                "bank_name": sstr(supply_row["bank_name"]),
+                "BANK_KEY": bank_key,
+                "stock_id": stock_id,
+                "tier": tier,
+                "unit_price": price,
+                "cost_per_unit": price,
+                "stock_use": {stock_id: 1.0},
+                "type": "normal",
+                "proximity": tier,
+            })
+
+            stock_caps[stock_id] = qty_avail
+            stock_bankkey[stock_id] = bank_key
+
+    return options, stock_caps, stock_bankkey
+
+
 # ================= Optimiser =================
 def optimise(demand_df: pd.DataFrame,
              target_lpa: str, target_nca: str,
              lpa_neigh: List[str], nca_neigh: List[str],
-             lpa_neigh_norm: List[str], nca_neigh_norm: List[str]) -> Tuple[pd.DataFrame, float, str]:
+             lpa_neigh_norm: List[str], nca_neigh_norm: List[str]
+             ) -> Tuple[pd.DataFrame, float, str]:
+    # Pick contract size from total demand (unchanged)
     chosen_size = select_size_for_demand(demand_df, backend["Pricing"])
-    options, stock_caps, stock_bankkey = prepare_options(
+
+    # ---- Build options per ledger ----
+    # 1) Area (non-hedgerow, non-watercourse)
+    options_area, caps_area, bk_area = prepare_options(
         demand_df, chosen_size, target_lpa, target_nca,
         lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
     )
+
+    # 2) Hedgerow
+    options_hedge, caps_hedge, bk_hedge = prepare_hedgerow_options(
+        demand_df, chosen_size, target_lpa, target_nca,
+        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+    )
+
+    # 3) Watercourse
+    options_water, caps_water, bk_water = prepare_watercourse_options(
+        demand_df, chosen_size, target_lpa, target_nca,
+        lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+    )
+
+    # ---- Combine ledgers into one joint solve ----
+    options: List[dict] = []
+    options.extend(options_area)
+    options.extend(options_hedge)
+    options.extend(options_water)
+
+    stock_caps: Dict[str, float] = {}
+    stock_caps.update(caps_area)
+    stock_caps.update(caps_hedge)
+    stock_caps.update(caps_water)
+
+    stock_bankkey: Dict[str, str] = {}
+    stock_bankkey.update(bk_area)
+    stock_bankkey.update(bk_hedge)
+    stock_bankkey.update(bk_water)
+
     if not options:
         raise RuntimeError("No feasible options. Check prices/stock/rules or location tiers.")
 
+    # ---- Map options to each demand row ----
     idx_by_dem: Dict[int, List[int]] = {}
     dem_need: Dict[int, float] = {}
     for di, drow in demand_df.iterrows():
@@ -1201,9 +1708,11 @@ def optimise(demand_df: pd.DataFrame,
             # Hard limit: <= 2 banks
             prob += pulp.lpSum([y[b] for b in bank_keys]) <= 2
 
+            # Link option selection to bank usage
             for i, opt in enumerate(options):
                 prob += z[i] <= y[opt["BANK_KEY"]]
 
+            # Exactly one option per demand; meet its units; bind x to z
             for di, idxs in idx_by_dem.items():
                 need = dem_need[di]
                 prob += pulp.lpSum([z[i] for i in idxs]) == 1
@@ -1211,6 +1720,7 @@ def optimise(demand_df: pd.DataFrame,
                 for i in idxs:
                     prob += x[i] <= need * z[i]
 
+            # Stock capacity constraints
             use_map: Dict[str, List[Tuple[int, float]]] = {}
             for i, opt in enumerate(options):
                 for sid, coef in opt["stock_use"].items():
@@ -1219,12 +1729,13 @@ def optimise(demand_df: pd.DataFrame,
                 cap = float(stock_caps.get(sid, 0.0))
                 prob += pulp.lpSum([coef * x[i] for (i, coef) in pairs]) <= cap
 
+            # Optional cost cap (for stage B)
             if cost_cap is not None:
                 prob += pulp.lpSum([options[i]["unit_price"] * x[i] for i in range(len(options))]) <= cost_cap + 1e-9
 
             return prob, x, z, y
 
-        # Stage A: cost min
+        # Stage A: min cost
         probA, xA, zA, yA = build_problem(minimise_banks=False, cost_cap=None)
         probA.solve(pulp.PULP_CBC_CMD(msg=False))
         statusA = pulp.LpStatus[probA.status]
@@ -1245,7 +1756,7 @@ def optimise(demand_df: pd.DataFrame,
                         "bank_name": opt.get("bank_name",""),
                         "bank_id": opt.get("bank_id",""),
                         "supply_habitat": opt["supply_habitat"],
-                        "allocation_type": opt["type"],
+                        "allocation_type": opt.get("type", "normal"),
                         "tier": opt["tier"],
                         "units_supplied": qty,
                         "unit_price": opt["unit_price"],
@@ -1261,7 +1772,7 @@ def optimise(demand_df: pd.DataFrame,
 
         allocA, costA = extract(xA, zA)
 
-        # Stage B: minimise #banks under +1% cap
+        # Stage B: minimise #banks under +1% cost cap
         probB, xB, zB, yB = build_problem(minimise_banks=True, cost_cap=(1.0 + SINGLE_BANK_SOFT_PCT) * best_cost)
         probB.solve(pulp.PULP_CBC_CMD(msg=False))
         statusB = pulp.LpStatus[probB.status]
@@ -1271,8 +1782,9 @@ def optimise(demand_df: pd.DataFrame,
 
             def bank_count(df):
                 return df["BANK_KEY"].nunique() if not df.empty else 0
+
             if bank_count(allocB) < bank_count(allocA):
-                # Stage C: re-min cost with banks fixed
+                # Stage C: re-min cost with chosen banks fixed
                 chosen_banks = list(allocB["BANK_KEY"].unique())
                 probC, xC, zC, yC = build_problem(minimise_banks=False, cost_cap=None)
                 for b in bank_keys:
@@ -1288,13 +1800,12 @@ def optimise(demand_df: pd.DataFrame,
         return allocA, costA, chosen_size
 
     except Exception:
-        # Greedy fallback
+        # ---- Greedy fallback (unchanged) ----
         caps = stock_caps.copy()
         used_banks: List[str] = []
 
         def bank_ok(b):
-            cand = set(used_banks)
-            cand.add(b)
+            cand = set(used_banks); cand.add(b)
             return len(cand) <= 2
 
         rows = []
@@ -1327,7 +1838,9 @@ def optimise(demand_df: pd.DataFrame,
 
             if best_i is None:
                 name = sstr(drow["habitat_name"])
-                raise RuntimeError(f"Greedy fallback infeasible for '{name}' (no single option covers need within caps and bank limit).")
+                raise RuntimeError(
+                    f"Greedy fallback infeasible for '{name}' (no single option covers need within caps and bank limit)."
+                )
 
             opt = options[best_i]
             bkey = opt["BANK_KEY"]
@@ -1342,7 +1855,7 @@ def optimise(demand_df: pd.DataFrame,
                 "bank_name": opt.get("bank_name",""),
                 "bank_id": opt.get("bank_id",""),
                 "supply_habitat": opt["supply_habitat"],
-                "allocation_type": opt["type"],
+                "allocation_type": opt.get("type", "normal"),
                 "tier": opt["tier"],
                 "units_supplied": need,
                 "unit_price": opt["unit_price"],
@@ -1583,9 +2096,9 @@ if run:
                 except Exception as e:
                     st.warning(f"Auto-locate failed: {e}. Proceeding with 'far' tiers only.")
 
-        # Validate against catalog — allow special Net Gain label
+        # Validate against catalog — allow special Net Gain labels
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h != NET_GAIN_LABEL]
+        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h not in [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL]]
         if unknown:
             st.error(f"These demand habitats aren't in the catalog: {unknown}")
             st.stop()
@@ -1763,20 +2276,6 @@ if run:
             {"Item": "Grand total",      "Amount £": round(total_with_admin, 2)},
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
-
-        # Downloads
-        st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
-                           file_name="allocation.csv", mime="text/csv")
-        st.download_button("Download site/habitat totals (CSV)",
-                           data=df_to_csv_bytes(site_hab_totals),
-                           file_name="site_habitat_totals_effective_units.csv",
-                           mime="text/csv")
-        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
-                           file_name="allocation_by_bank.csv", mime="text/csv")
-        st.download_button("Download by habitat (CSV)", data=df_to_csv_bytes(by_hab),
-                           file_name="allocation_by_habitat.csv", mime="text/csv")
-        st.download_button("Download order summary (CSV)", data=df_to_csv_bytes(summary_df),
-                           file_name="order_summary.csv", mime="text/csv")
         
         # ========== MAP UPDATE NOTICE (NO RERUN) ==========
         st.success("🗺️ Map automatically updated with bank catchment areas! Scroll up to see the results map.")
@@ -1790,8 +2289,15 @@ if run:
 
 # ================= Fixed Email Report Generation Function =================
 def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.DataFrame, total_cost: float, admin_fee: float, 
-                                       client_name: str, ref_number: str, location: str) -> Tuple[pd.DataFrame, str]:
+                                       client_name: str, ref_number: str, location: str,
+                                       manual_hedgerow_rows: List[dict] = None,
+                                       manual_watercourse_rows: List[dict] = None) -> Tuple[pd.DataFrame, str]:
     """Generate the client-facing report table and email body matching exact template with improved styling"""
+    
+    if manual_hedgerow_rows is None:
+        manual_hedgerow_rows = []
+    if manual_watercourse_rows is None:
+        manual_watercourse_rows = []
     
     # Separate by habitat types
     area_habitats = []
@@ -1814,6 +2320,9 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             if demand_habitat == NET_GAIN_LABEL:
                 demand_distinctiveness = "10% Net Gain"
                 demand_habitat_display = "Any"
+            elif demand_habitat == "Net Gain (Hedgerows)":
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any (Hedgerows)"
             else:
                 # Look up from catalog
                 cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
@@ -1849,14 +2358,224 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             }
             
             # Categorize by habitat type
-            if "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
+            if demand_habitat == "Net Gain (Hedgerows)" or "hedgerow" in demand_habitat.lower() or "hedgerow" in supply_habitat.lower():
                 hedgerow_habitats.append(row_data)
             elif "watercourse" in demand_habitat.lower() or "water" in supply_habitat.lower():
                 watercourse_habitats.append(row_data)
             else:
                 area_habitats.append(row_data)
     
-    total_with_admin = total_cost + admin_fee
+    # Process manual hedgerow entries
+    manual_hedgerow_cost = 0.0
+    for row in manual_hedgerow_rows:
+        habitat_lost = sstr(row.get("habitat_lost", ""))
+        habitat_name = sstr(row.get("habitat_name", ""))
+        units = float(row.get("units", 0.0) or 0.0)
+        price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
+        
+        if habitat_name and units > 0:
+            offset_cost = units * price_per_unit
+            manual_hedgerow_cost += offset_cost
+            
+            # Determine distinctiveness for lost habitat
+            if habitat_lost == NET_GAIN_LABEL:
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any"
+            elif habitat_lost == "Net Gain (Hedgerows)":
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any (Hedgerows)"
+            else:
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_lost]
+                if not cat_match.empty:
+                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    demand_habitat_display = habitat_lost
+                else:
+                    demand_distinctiveness = "Medium"
+                    demand_habitat_display = habitat_lost if habitat_lost else "Not specified"
+            
+            # Determine distinctiveness for supplied habitat
+            if habitat_name == NET_GAIN_LABEL:
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any"
+            elif habitat_name == "Net Gain (Hedgerows)":
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any (Hedgerows)"
+            else:
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
+                if not cat_match.empty:
+                    supply_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    supply_habitat_display = habitat_name
+                else:
+                    supply_distinctiveness = "Medium"
+                    supply_habitat_display = habitat_name
+            
+            row_data = {
+                "Distinctiveness": demand_distinctiveness,
+                "Habitats Lost": demand_habitat_display,
+                "# Units": f"{units:.2f}",
+                "Distinctiveness_Supply": supply_distinctiveness,
+                "Habitats Supplied": supply_habitat_display,
+                "# Units_Supply": f"{units:.2f}",
+                "Price Per Unit": f"£{price_per_unit:,.0f}",
+                "Offset Cost": f"£{offset_cost:,.0f}"
+            }
+            hedgerow_habitats.append(row_data)
+    
+    # Process manual watercourse entries
+    manual_watercourse_cost = 0.0
+    for row in manual_watercourse_rows:
+        habitat_lost = sstr(row.get("habitat_lost", ""))
+        habitat_name = sstr(row.get("habitat_name", ""))
+        units = float(row.get("units", 0.0) or 0.0)
+        price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
+        
+        if habitat_name and units > 0:
+            offset_cost = units * price_per_unit
+            manual_watercourse_cost += offset_cost
+            
+            # Determine distinctiveness for lost habitat
+            if habitat_lost == NET_GAIN_LABEL:
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any"
+            elif habitat_lost == "Net Gain (Hedgerows)":
+                demand_distinctiveness = "10% Net Gain"
+                demand_habitat_display = "Any (Hedgerows)"
+            else:
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_lost]
+                if not cat_match.empty:
+                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    demand_habitat_display = habitat_lost
+                else:
+                    demand_distinctiveness = "Medium"
+                    demand_habitat_display = habitat_lost if habitat_lost else "Not specified"
+            
+            # Determine distinctiveness for supplied habitat
+            if habitat_name == NET_GAIN_LABEL:
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any"
+            elif habitat_name == "Net Gain (Hedgerows)":
+                supply_distinctiveness = "10% Net Gain"
+                supply_habitat_display = "Any (Hedgerows)"
+            else:
+                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == habitat_name]
+                if not cat_match.empty:
+                    supply_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
+                    supply_habitat_display = habitat_name
+                else:
+                    supply_distinctiveness = "Medium"
+                    supply_habitat_display = habitat_name
+            
+            row_data = {
+                "Distinctiveness": demand_distinctiveness,
+                "Habitats Lost": demand_habitat_display,
+                "# Units": f"{units:.2f}",
+                "Distinctiveness_Supply": supply_distinctiveness,
+                "Habitats Supplied": supply_habitat_display,
+                "# Units_Supply": f"{units:.2f}",
+                "Price Per Unit": f"£{price_per_unit:,.0f}",
+                "Offset Cost": f"£{offset_cost:,.0f}"
+            }
+            watercourse_habitats.append(row_data)
+    
+    # Update total cost to include manual entries
+    total_cost_with_manual = total_cost + manual_hedgerow_cost + manual_watercourse_cost
+    total_with_admin = total_cost_with_manual + admin_fee
+    
+    # Bundle Low + 10% Net Gain rows together for each habitat type
+    def bundle_low_and_net_gain(habitats_list):
+        """Bundle Low distinctiveness and 10% Net Gain rows together"""
+        bundled = []
+        low_rows = {}
+        net_gain_rows = {}
+        other_rows = []
+        
+        # Separate rows by distinctiveness
+        for row in habitats_list:
+            dist = row["Distinctiveness"]
+            supply_dist = row["Distinctiveness_Supply"]
+            
+            # Check if this is a Low or Net Gain row
+            if dist == "Low" or dist == "10% Net Gain":
+                # Group by supply habitat for bundling
+                supply_hab = row["Habitats Supplied"]
+                if dist == "Low":
+                    if supply_hab not in low_rows:
+                        low_rows[supply_hab] = []
+                    low_rows[supply_hab].append(row)
+                else:  # 10% Net Gain
+                    if supply_hab not in net_gain_rows:
+                        net_gain_rows[supply_hab] = []
+                    net_gain_rows[supply_hab].append(row)
+            else:
+                other_rows.append(row)
+        
+        # Bundle Low + Net Gain rows for same supply habitat
+        all_supply_habitats = set(list(low_rows.keys()) + list(net_gain_rows.keys()))
+        for supply_hab in sorted(all_supply_habitats):
+            low_list = low_rows.get(supply_hab, [])
+            ng_list = net_gain_rows.get(supply_hab, [])
+            
+            if low_list and ng_list:
+                # Bundle them together
+                total_units = sum(float(r["# Units"].replace(",", "")) for r in low_list + ng_list)
+                total_supply_units = sum(float(r["# Units_Supply"].replace(",", "")) for r in low_list + ng_list)
+                total_cost = sum(float(r["Offset Cost"].replace("£", "").replace(",", "")) for r in low_list + ng_list)
+                
+                # Use weighted average for price per unit
+                avg_price = total_cost / total_supply_units if total_supply_units > 0 else 0
+                
+                bundled_row = {
+                    "Distinctiveness": "Low + 10% Net Gain",
+                    "Habitats Lost": low_list[0]["Habitats Lost"] if low_list else ng_list[0]["Habitats Lost"],
+                    "# Units": f"{total_units:.2f}",
+                    "Distinctiveness_Supply": low_list[0]["Distinctiveness_Supply"] if low_list else ng_list[0]["Distinctiveness_Supply"],
+                    "Habitats Supplied": supply_hab,
+                    "# Units_Supply": f"{total_supply_units:.2f}",
+                    "Price Per Unit": f"£{avg_price:,.0f}",
+                    "Offset Cost": f"£{total_cost:,.0f}"
+                }
+                bundled.append(bundled_row)
+            elif low_list:
+                # Only Low rows, add them as is
+                bundled.extend(low_list)
+            elif ng_list:
+                # Only Net Gain rows, add them as is
+                bundled.extend(ng_list)
+        
+        # Add other rows
+        bundled.extend(other_rows)
+        return bundled
+    
+    # Apply bundling to each habitat type
+    area_habitats = bundle_low_and_net_gain(area_habitats)
+    hedgerow_habitats = bundle_low_and_net_gain(hedgerow_habitats)
+    watercourse_habitats = bundle_low_and_net_gain(watercourse_habitats)
+    
+    # Sort habitats by distinctiveness priority (High > Medium > Low + Net Gain > Very Low)
+    def sort_by_distinctiveness(habitats_list):
+        """Sort habitat rows by distinctiveness priority"""
+        distinctiveness_order = {
+            "Very High": 0,
+            "V.High": 0,
+            "High": 1,
+            "Medium": 2,
+            "Low + 10% Net Gain": 3,
+            "Low": 4,
+            "10% Net Gain": 5,
+            "Very Low": 6,
+            "V.Low": 6
+        }
+        
+        def get_sort_key(row):
+            dist = row.get("Distinctiveness", "")
+            return distinctiveness_order.get(dist, 99)  # Unknown distinctiveness goes to end
+        
+        return sorted(habitats_list, key=get_sort_key)
+    
+    # Apply sorting to each habitat type
+    area_habitats = sort_by_distinctiveness(area_habitats)
+    hedgerow_habitats = sort_by_distinctiveness(hedgerow_habitats)
+    watercourse_habitats = sort_by_distinctiveness(watercourse_habitats)
     
     # Build HTML table with improved styling (30% narrower, better colors)
     html_table = """
@@ -1943,24 +2662,24 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
             </tr>
             """
     
-    # Add Spatial Risk Multiplier section (placeholder)
-    html_table += """
-        <tr style="background-color: #D9F2D0;">
-            <td colspan="8" style="padding: 6px; border: 1px solid #000; font-weight: bold; color: #000;">Spatial Risk Multiplier</td>
-        </tr>
-        <tr>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Area Habitats</td>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-        </tr>
-        <tr>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Hedgerow Habitats</td>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-        </tr>
-        <tr>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;">Watercourse Habitats</td>
-            <td colspan="4" style="padding: 6px; border: 1px solid #000;"></td>
-        </tr>
-    """
+
+    
+    # Calculate total units including manual entries
+    total_demand_units = demand_df['units_required'].sum()
+    total_supply_units = alloc_df['units_supplied'].sum()
+    
+    # Add manual units
+    for row in manual_hedgerow_rows:
+        units = float(row.get("units", 0.0) or 0.0)
+        if units > 0:
+            total_demand_units += units
+            total_supply_units += units
+    
+    for row in manual_watercourse_rows:
+        units = float(row.get("units", 0.0) or 0.0)
+        if units > 0:
+            total_demand_units += units
+            total_supply_units += units
     
     # Add Planning Discharge Pack and Total
     html_table += f"""
@@ -1971,10 +2690,10 @@ def generate_client_report_table_fixed(alloc_df: pd.DataFrame, demand_df: pd.Dat
         <tr style="background-color: #f0f0f0; font-weight: bold;">
             <td style="padding: 6px; border: 1px solid #000;">Total</td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
-            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{demand_df['units_required'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{total_demand_units:.2f}</td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
-            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{alloc_df['units_supplied'].sum():.2f}</td>
+            <td style="padding: 6px; border: 1px solid #000; text-align: right;">{total_supply_units:.2f}</td>
             <td style="padding: 6px; border: 1px solid #000;"></td>
             <td style="padding: 6px; border: 1px solid #000; text-align: right;">£{total_with_admin:,.0f}</td>
         </tr>
@@ -2050,6 +2769,159 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
+
+# ========== MANUAL HEDGEROW/WATERCOURSE ENTRIES (PERSISTENT) ==========
+# This section persists across reruns because it's outside the "if run:" block
+if st.session_state.get("optimization_complete", False):
+    st.markdown("---")
+    st.markdown("#### ➕ Manual Additions (Hedgerow & Watercourse)")
+    st.info("Add additional hedgerow or watercourse units to your quote. These will be included in the final client report.")
+    
+    # Get available habitats
+    hedgerow_choices = get_hedgerow_habitats(backend["HabitatCatalog"])
+    watercourse_choices = get_watercourse_habitats(backend["HabitatCatalog"])
+    
+    # Hedgerow Section
+    with st.container(border=True):
+        st.markdown("**🌿 Manual Hedgerow Units**")
+        
+        # Add Net Gain option to hedgerow choices
+        hedgerow_choices_with_ng = hedgerow_choices + [NET_GAIN_LABEL] if hedgerow_choices else [NET_GAIN_LABEL]
+        
+        to_delete_hedgerow = []
+        for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
+            c1, c2, c3, c4, c5 = st.columns([0.30, 0.30, 0.15, 0.15, 0.10])
+            with c1:
+                if hedgerow_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_lost") and row["habitat_lost"] in hedgerow_choices_with_ng:
+                        default_idx = hedgerow_choices_with_ng.index(row["habitat_lost"])
+                    st.session_state.manual_hedgerow_rows[idx]["habitat_lost"] = st.selectbox(
+                        "Habitat Lost", hedgerow_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_hedge_lost_{row['id']}",
+                        help="Select hedgerow habitat lost"
+                    )
+                else:
+                    st.warning("No hedgerow habitats available in catalog")
+            with c2:
+                if hedgerow_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_name") and row["habitat_name"] in hedgerow_choices_with_ng:
+                        default_idx = hedgerow_choices_with_ng.index(row["habitat_name"])
+                    st.session_state.manual_hedgerow_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat to Mitigate", hedgerow_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_hedge_hab_{row['id']}",
+                        help="Select hedgerow habitat to mitigate"
+                    )
+                else:
+                    st.warning("No hedgerow habitats available")
+            with c3:
+                st.session_state.manual_hedgerow_rows[idx]["units"] = st.number_input(
+                    "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), 
+                    key=f"manual_hedge_units_{row['id']}"
+                )
+            with c4:
+                st.session_state.manual_hedgerow_rows[idx]["price_per_unit"] = st.number_input(
+                    "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
+                    key=f"manual_hedge_price_{row['id']}"
+                )
+            with c5:
+                if st.button("🗑️", key=f"del_manual_hedge_{row['id']}", help="Remove this row"):
+                    to_delete_hedgerow.append(row["id"])
+        
+        if to_delete_hedgerow:
+            st.session_state.manual_hedgerow_rows = [r for r in st.session_state.manual_hedgerow_rows if r["id"] not in to_delete_hedgerow]
+            st.rerun()
+        
+        col1, col2 = st.columns([0.5, 0.5])
+        with col1:
+            if st.button("➕ Add Hedgerow Entry", key="add_manual_hedge_btn"):
+                st.session_state.manual_hedgerow_rows.append({
+                    "id": st.session_state._next_manual_hedgerow_id,
+                    "habitat_lost": "",
+                    "habitat_name": "",
+                    "units": 0.0,
+                    "price_per_unit": 0.0
+                })
+                st.session_state._next_manual_hedgerow_id += 1
+                st.rerun()
+        with col2:
+            if st.button("🧹 Clear Hedgerow", key="clear_manual_hedge_btn"):
+                st.session_state.manual_hedgerow_rows = []
+                st.rerun()
+    
+    # Watercourse Section
+    with st.container(border=True):
+        st.markdown("**💧 Manual Watercourse Units**")
+        
+        # Add Net Gain option to watercourse choices
+        watercourse_choices_with_ng = watercourse_choices + [NET_GAIN_LABEL] if watercourse_choices else [NET_GAIN_LABEL]
+        
+        to_delete_watercourse = []
+        for idx, row in enumerate(st.session_state.manual_watercourse_rows):
+            c1, c2, c3, c4, c5 = st.columns([0.30, 0.30, 0.15, 0.15, 0.10])
+            with c1:
+                if watercourse_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_lost") and row["habitat_lost"] in watercourse_choices_with_ng:
+                        default_idx = watercourse_choices_with_ng.index(row["habitat_lost"])
+                    st.session_state.manual_watercourse_rows[idx]["habitat_lost"] = st.selectbox(
+                        "Habitat Lost", watercourse_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_water_lost_{row['id']}",
+                        help="Select watercourse habitat lost"
+                    )
+                else:
+                    st.warning("No watercourse habitats available in catalog")
+            with c2:
+                if watercourse_choices_with_ng:
+                    default_idx = None
+                    if row.get("habitat_name") and row["habitat_name"] in watercourse_choices_with_ng:
+                        default_idx = watercourse_choices_with_ng.index(row["habitat_name"])
+                    st.session_state.manual_watercourse_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat to Mitigate", watercourse_choices_with_ng,
+                        index=default_idx,
+                        key=f"manual_water_hab_{row['id']}",
+                        help="Select watercourse habitat to mitigate"
+                    )
+                else:
+                    st.warning("No watercourse habitats available")
+            with c3:
+                st.session_state.manual_watercourse_rows[idx]["units"] = st.number_input(
+                    "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)),
+                    key=f"manual_water_units_{row['id']}"
+                )
+            with c4:
+                st.session_state.manual_watercourse_rows[idx]["price_per_unit"] = st.number_input(
+                    "Price/Unit (£)", min_value=0.0, step=1.0, value=float(row.get("price_per_unit", 0.0)),
+                    key=f"manual_water_price_{row['id']}"
+                )
+            with c5:
+                if st.button("🗑️", key=f"del_manual_water_{row['id']}", help="Remove this row"):
+                    to_delete_watercourse.append(row["id"])
+        
+        if to_delete_watercourse:
+            st.session_state.manual_watercourse_rows = [r for r in st.session_state.manual_watercourse_rows if r["id"] not in to_delete_watercourse]
+            st.rerun()
+        
+        col1, col2 = st.columns([0.5, 0.5])
+        with col1:
+            if st.button("➕ Add Watercourse Entry", key="add_manual_water_btn"):
+                st.session_state.manual_watercourse_rows.append({
+                    "id": st.session_state._next_manual_watercourse_id,
+                    "habitat_lost": "",
+                    "habitat_name": "",
+                    "units": 0.0,
+                    "price_per_unit": 0.0
+                })
+                st.session_state._next_manual_watercourse_id += 1
+                st.rerun()
+        with col2:
+            if st.button("🧹 Clear Watercourse", key="clear_manual_water_btn"):
+                st.session_state.manual_watercourse_rows = []
+                st.rerun()
 
 # Add this to your optimization results section (after the downloads):
 if (st.session_state.get("optimization_complete", False) and 
@@ -2127,7 +2999,9 @@ if (st.session_state.get("optimization_complete", False) and
         # Generate the report using session data and input values
         client_table, email_html = generate_client_report_table_fixed(
             session_alloc_df, session_demand_df, session_total_cost, ADMIN_FEE_GBP,
-            client_name, ref_number, location
+            client_name, ref_number, location,
+            st.session_state.manual_hedgerow_rows,
+            st.session_state.manual_watercourse_rows
         )
         
         # Display the table
@@ -2149,33 +3023,24 @@ if (st.session_state.get("optimization_complete", False) and
             st.dataframe(display_table[cols_to_show], use_container_width=True, hide_index=True)
         
         # Email generation
-        # Enhanced email generation with .eml file creation and improved mailto options:
-st.markdown("**📧 Email Generation:**")
-
-col1, col2, col3 = st.columns([1, 1, 1])
-
-with col1:
-    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-        st.code(email_html, language="html")
-        st.success("Email HTML generated! Copy the code above and paste into your email client.")
-
-with col2:
-    # Create .eml file content
-    import base64
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    
-    subject = f"RE: BNG Units for site at {location} - {ref_number}"
-    total_with_admin = session_total_cost + ADMIN_FEE_GBP
-    
-    # Create email message
-    msg = MIMEMultipart('alternative')
-    msg['Subject'] = subject
-    msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
-    msg['To'] = ''  # Will be filled by user
-    
-    # Create text version for email clients that don't support HTML
-    text_body = f"""Dear {client_name}
+        st.markdown("**📧 Email Generation:**")
+        
+        # Create .eml file content
+        import base64
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        
+        subject = f"RE: BNG Units for site at {location} - {ref_number}"
+        total_with_admin = session_total_cost + ADMIN_FEE_GBP
+        
+        # Create email message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = 'quotes@wildcapital.com'  # Replace with your actual email
+        msg['To'] = ''  # Will be filled by user
+        
+        # Create text version for email clients that don't support HTML
+        text_body = f"""Dear {client_name}
 
 Our Ref: {ref_number}
 
@@ -2204,147 +3069,26 @@ If you have any questions, please reply to this email or call 01962 436574.
 
 Best regards,
 Wild Capital Team"""
-    
-    # Attach text and HTML versions
-    text_part = MIMEText(text_body, 'plain')
-    html_part = MIMEText(email_html, 'html')
-    
-    msg.attach(text_part)
-    msg.attach(html_part)
-    
-    # Convert to string
-    eml_content = msg.as_string()
-    
-    # Download button for .eml file
-    st.download_button(
-        "📧 Download Email (.eml)",
-        data=eml_content,
-        file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
-        mime="message/rfc822",
-        help="Download as .eml file - double-click to open in your email client with full HTML formatting"
-    )
-
-with col3:
-    # Enhanced mailto with HTML formatting attempts
-    import urllib.parse
-    
-    encoded_subject = urllib.parse.quote(subject)
-    
-    # Approach 1: Try to include HTML in body (some clients support this)
-    html_mailto_body = f"""<html><body>{email_html}</body></html>"""
-    encoded_html_body = urllib.parse.quote(html_mailto_body)
-    
-    # Approach 2: Rich text formatting with line breaks and formatting
-    formatted_text_body = f"""Dear {client_name}
-
-Our Ref: {ref_number}
-
-Arbtech has advised us that you need Biodiversity Net Gain units for your development in {location}, and we're here to help you discharge your BNG condition.
-
-Thank you for enquiring about BNG Units for your development in {location}
-
-About Us
-Wild Capital is a national supplier of BNG Units and environmental mitigation credits (Nutrient Neutrality, SANG), backed by institutional finance.
-
-Your Quote - £{total_with_admin:,.0f} + VAT
-
-PRICING BREAKDOWN:
-═══════════════════════════════════════════════════════════════════
-
-DEVELOPMENT IMPACT                    |  MITIGATION SUPPLIED
-═══════════════════════════════════════════════════════════════════"""
-    
-    # Add table data in text format
-    all_habitats = []
-    
-    # Get habitat data (same logic as in the function)
-    for _, demand_row in session_demand_df.iterrows():
-        demand_habitat = demand_row["habitat_name"]
-        demand_units = demand_row["units_required"]
         
-        matching_allocs = session_alloc_df[session_alloc_df["demand_habitat"] == demand_habitat]
+        # Attach text and HTML versions
+        text_part = MIMEText(text_body, 'plain')
+        html_part = MIMEText(email_html, 'html')
         
-        for _, alloc_row in matching_allocs.iterrows():
-            if demand_habitat == NET_GAIN_LABEL:
-                demand_distinctiveness = "10% Net Gain"
-                demand_habitat_display = "Any"
-            else:
-                cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == demand_habitat]
-                if not cat_match.empty:
-                    demand_distinctiveness = cat_match["distinctiveness_name"].iloc[0]
-                    demand_habitat_display = demand_habitat
-                else:
-                    demand_distinctiveness = "Medium"
-                    demand_habitat_display = demand_habitat
-            
-            supply_habitat = alloc_row["supply_habitat"]
-            supply_units = alloc_row["units_supplied"]
-            unit_price = alloc_row["unit_price"]
-            offset_cost = alloc_row["cost"]
-            
-            supply_cat_match = backend["HabitatCatalog"][backend["HabitatCatalog"]["habitat_name"] == supply_habitat]
-            if not supply_cat_match.empty:
-                supply_distinctiveness = supply_cat_match["distinctiveness_name"].iloc[0]
-            else:
-                supply_distinctiveness = "Medium"
-            
-            all_habitats.append({
-                "demand_dist": demand_distinctiveness,
-                "demand_hab": demand_habitat_display,
-                "demand_units": demand_units,
-                "supply_dist": supply_distinctiveness,
-                "supply_hab": supply_habitat,
-                "supply_units": supply_units,
-                "unit_price": unit_price,
-                "cost": offset_cost
-            })
-    
-    # Format table data as text
-    for habitat in all_habitats:
-        formatted_text_body += f"""
+        msg.attach(text_part)
+        msg.attach(html_part)
+        
+        # Convert to string
+        eml_content = msg.as_string()
+        
+        # Download button for .eml file
+        st.download_button(
+            "📧 Download Email (.eml)",
+            data=eml_content,
+            file_name=f"BNG_Quote_{ref_number}_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.eml",
+            mime="message/rfc822",
+            help="Download as .eml file - double-click to open in your email client with full HTML formatting"
+        )
 
-{habitat["demand_dist"]} | {habitat["demand_hab"]} | {habitat["demand_units"]:.2f} units
-→ {habitat["supply_dist"]} | {habitat["supply_hab"]} | {habitat["supply_units"]:.2f} units
-   Price: £{habitat["unit_price"]:,.0f}/unit | Cost: £{habitat["cost"]:,.0f}"""
-    
-    formatted_text_body += f"""
-
-═══════════════════════════════════════════════════════════════════
-Planning Discharge Pack: £{ADMIN_FEE_GBP:,.0f}
-TOTAL: £{total_with_admin:,.0f} + VAT
-═══════════════════════════════════════════════════════════════════
-
-Next Steps:
-BNG is a pre-commencement, not a pre-planning, condition.
-
-To accept the quote, let us know—we'll request some basic details before sending the Allocation Agreement. The price is fixed for 30 days, but unit availability is only guaranteed once the agreement is signed.
-
-If you have any questions, please reply to this email or call 01962 436574.
-
-Best regards,
-Wild Capital Team"""
-    
-    encoded_formatted_body = urllib.parse.quote(formatted_text_body)
-    
-    # Create multiple options
-    st.markdown("**📧 Quick Email Options:**")
-    
-    # Option 1: Formatted text version (most reliable)
-    mailto_formatted = f"mailto:?subject={encoded_subject}&body={encoded_formatted_body}"
-    st.markdown(f"[📧 Rich Text Email]({mailto_formatted})")
-    st.caption("Formatted text version with table layout")
-    
-    # Option 2: Try HTML (works in some clients)
-    mailto_html = f"mailto:?subject={encoded_subject}&body={encoded_html_body}"
-    st.markdown(f"[📧 HTML Email (experimental)]({mailto_html})")
-    st.caption("May work in some email clients")
-    
-    # Option 3: Simple version (fallback)
-    simple_body = f"BNG Quote: £{total_with_admin:,.0f} + VAT for {location}%0D%0A%0D%0APlease see attached detailed breakdown."
-    mailto_simple = f"mailto:?subject={encoded_subject}&body={simple_body}"
-    st.markdown(f"[📧 Simple Email]({mailto_simple})")
-    st.caption("Basic version for maximum compatibility")
-            
 # Debug section (temporary - can remove later)
 if st.checkbox("Show detailed debug info", value=False):
     st.subheader("Debug Information")
