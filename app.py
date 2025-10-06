@@ -842,6 +842,12 @@ def build_results_map(alloc_df: pd.DataFrame):
     # Add layer control
     folium.LayerControl(collapsed=False).add_to(fmap)
     return fmap
+
+# Check if we need to refresh the map after optimization (BEFORE map renders)
+if st.session_state.get("needs_map_refresh", False):
+    st.session_state["needs_map_refresh"] = False
+    st.rerun()
+
 # ================= Map Container (FIXED VERSION) =================
 with st.container():
     st.markdown("### Map")
@@ -915,11 +921,6 @@ with st.container():
 
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
-
-# Check if we need to refresh the map after optimization
-if st.session_state.get("needs_map_refresh", False):
-    st.session_state["needs_map_refresh"] = False
-    st.rerun()
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
@@ -2820,6 +2821,19 @@ Prices exclude VAT. Any legal costs for contract amendments will be charged to t
     report_df = pd.DataFrame(all_habitats) if all_habitats else pd.DataFrame()
     
     return report_df, email_body
+
+# ========== PERSISTENT ALLOCATION DETAILS ==========
+# This section persists across reruns because it's outside the "if run:" block
+if st.session_state.get("optimization_complete", False) and st.session_state.get("last_alloc_df") is not None:
+    st.markdown("---")
+    st.markdown("### 📊 Optimization Results")
+    
+    # Show allocation detail
+    st.markdown("#### Allocation detail")
+    alloc_df = st.session_state["last_alloc_df"]
+    st.dataframe(alloc_df, use_container_width=True)
+    if "price_source" in alloc_df.columns:
+        st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
 
 # ========== MANUAL HEDGEROW/WATERCOURSE ENTRIES (PERSISTENT) ==========
 # This section persists across reruns because it's outside the "if run:" block
