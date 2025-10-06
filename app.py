@@ -265,6 +265,32 @@ def tier_for_bank(bank_lpa: str, bank_nca: str,
                   lpa_neigh: List[str], nca_neigh: List[str],
                   lpa_neigh_norm: Optional[List[str]] = None,
                   nca_neigh_norm: Optional[List[str]] = None) -> str:
+    """
+    Determine proximity tier using BNG "either-axis, pick the best" rule.
+    
+    Evaluates LPA and NCA independently, then returns the best (closest) category:
+    - Local / Within (SRM = 1.0) if either axis is "same":
+      bank LPA == target LPA OR bank NCA == target NCA
+    - Adjacent / Neighbouring (SRM = 0.75) if not local, but either axis is "neighbour":
+      bank LPA ∈ target LPA's neighbour list OR bank NCA ∈ target NCA's neighbour list
+    - Far / Outside (SRM = 0.5) otherwise
+    
+    Important: LPA and NCA are evaluated independently with no cross-layer comparisons.
+    If one axis is missing/unknown, the other axis can still determine the tier.
+    
+    Args:
+        bank_lpa: Bank's Local Planning Authority name
+        bank_nca: Bank's National Character Area name
+        t_lpa: Target site's LPA name
+        t_nca: Target site's NCA name
+        lpa_neigh: List of LPA names that are neighbours to the target LPA
+        nca_neigh: List of NCA names that are neighbours to the target NCA
+        lpa_neigh_norm: Pre-normalized LPA neighbour list (optional)
+        nca_neigh_norm: Pre-normalized NCA neighbour list (optional)
+    
+    Returns:
+        "local", "adjacent", or "far"
+    """
     b_lpa = norm_name(bank_lpa)
     b_nca = norm_name(bank_nca)
     t_lpa_n = norm_name(t_lpa)
@@ -273,14 +299,24 @@ def tier_for_bank(bank_lpa: str, bank_nca: str,
         lpa_neigh_norm = [norm_name(x) for x in (lpa_neigh or [])]
     if nca_neigh_norm is None:
         nca_neigh_norm = [norm_name(x) for x in (nca_neigh or [])]
+    
+    # Check LPA axis: same LPA = local
     if b_lpa and t_lpa_n and b_lpa == t_lpa_n:
         return "local"
+    
+    # Check NCA axis: same NCA = local
     if b_nca and t_nca_n and b_nca == t_nca_n:
         return "local"
+    
+    # Check LPA axis: neighbour LPA = adjacent
     if b_lpa and b_lpa in lpa_neigh_norm:
         return "adjacent"
+    
+    # Check NCA axis: neighbour NCA = adjacent
     if b_nca and b_nca in nca_neigh_norm:
         return "adjacent"
+    
+    # Both axes are far = far
     return "far"
 
 def select_contract_size(total_units: float, present: List[str]) -> str:
