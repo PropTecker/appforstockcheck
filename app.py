@@ -86,7 +86,10 @@ def init_session_state():
         "_next_manual_watercourse_id": 1,
         "email_client_name": "INSERT NAME",
         "email_ref_number": "BNG00XXX",
-        "email_location": "INSERT LOCATION"
+        "email_location": "INSERT LOCATION",
+        "postcode_input": "",
+        "address_input": "",
+        "needs_map_refresh": False
     }
     
     for key, value in defaults.items():
@@ -119,6 +122,9 @@ def reset_quote():
     st.session_state.email_ref_number = "BNG00XXX"
     st.session_state.email_location = "INSERT LOCATION"
     st.session_state.map_version += 1
+    # Clear location input fields
+    st.session_state.postcode_input = ""
+    st.session_state.address_input = ""
 
 init_session_state()
 
@@ -600,9 +606,9 @@ with st.container():
     st.subheader("1) Locate target site")
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        postcode = st.text_input("Postcode (quicker)", value="")
+        postcode = st.text_input("Postcode (quicker)", value=st.session_state.get("postcode_input", ""), key="postcode_input")
     with c2:
-        address = st.text_input("Address (if no postcode)", value="")
+        address = st.text_input("Address (if no postcode)", value=st.session_state.get("address_input", ""), key="address_input")
     with c3:
         run_locate = st.button("Locate", key="locate_btn")
 
@@ -909,6 +915,11 @@ with st.container():
 
     except Exception as e:
         st.error(f"Map rendering failed: {e}")
+
+# Check if we need to refresh the map after optimization
+if st.session_state.get("needs_map_refresh", False):
+    st.session_state["needs_map_refresh"] = False
+    st.rerun()
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
@@ -2317,20 +2328,8 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
         
-        # Downloads
-        st.download_button("Download allocation (CSV)", data=df_to_csv_bytes(alloc_df),
-                           file_name="allocation.csv", mime="text/csv")
-        st.download_button("Download site/habitat totals (CSV)",
-                           data=df_to_csv_bytes(site_hab_totals),
-                           file_name="site_habitat_totals_effective_units.csv",
-                           mime="text/csv")
-        st.download_button("Download by bank (CSV)", data=df_to_csv_bytes(by_bank),
-                           file_name="allocation_by_bank.csv", mime="text/csv")
-        
-        # Automatically refresh to update map with results
-        st.info("🗺️ Refreshing to display results on map...", icon="↻")
-        time.sleep(1.5)  # Brief delay so users see the results
-        st.rerun()
+        # Trigger map refresh by setting a flag
+        st.session_state["needs_map_refresh"] = True
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
