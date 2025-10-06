@@ -99,7 +99,21 @@ def init_session_state():
 def reset_quote():
     """Reset all quote-related session state to start a new quote"""
     try:
-        # Use dictionary-style access for all assignments to avoid attribute errors
+        # First, delete all widget-bound keys for existing demand rows
+        # This must happen BEFORE resetting demand_rows to clear the widget state
+        if "demand_rows" in st.session_state:
+            for row in st.session_state["demand_rows"]:
+                row_id = row.get("id")
+                # Delete habitat selectbox key
+                hab_key = f"hab_{row_id}"
+                if hab_key in st.session_state:
+                    del st.session_state[hab_key]
+                # Delete units number_input key
+                units_key = f"units_{row_id}"
+                if units_key in st.session_state:
+                    del st.session_state[units_key]
+        
+        # Now reset demand_rows data
         st.session_state["demand_rows"] = [{"id": 1, "habitat_name": "", "units": 0.0}]
         st.session_state["_next_row_id"] = 2
         st.session_state["target_lpa_name"] = ""
