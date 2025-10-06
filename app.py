@@ -98,46 +98,41 @@ def init_session_state():
 
 def reset_quote():
     """Reset all quote-related session state to start a new quote"""
-    st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
-    st.session_state._next_row_id = 2
-    st.session_state.target_lpa_name = ""
-    st.session_state.target_nca_name = ""
-    st.session_state.lpa_neighbors = []
-    st.session_state.nca_neighbors = []
-    st.session_state.lpa_neighbors_norm = []
-    st.session_state.nca_neighbors_norm = []
-    st.session_state.target_lat = None
-    st.session_state.target_lon = None
-    st.session_state.lpa_geojson = None
-    st.session_state.nca_geojson = None
-    st.session_state.last_alloc_df = None
-    st.session_state.bank_geo_cache = {}
-    st.session_state.bank_catchment_geo = {}
-    st.session_state.optimization_complete = False
-    st.session_state.manual_hedgerow_rows = []
-    st.session_state.manual_watercourse_rows = []
-    st.session_state._next_manual_hedgerow_id = 1
-    st.session_state._next_manual_watercourse_id = 1
-    st.session_state.email_client_name = "INSERT NAME"
-    st.session_state.email_ref_number = "BNG00XXX"
-    st.session_state.email_location = "INSERT LOCATION"
-    st.session_state.map_version = st.session_state.get("map_version", 0) + 1
+    # Use dictionary-style access for all assignments to avoid attribute errors
+    st.session_state["demand_rows"] = [{"id": 1, "habitat_name": "", "units": 0.0}]
+    st.session_state["_next_row_id"] = 2
+    st.session_state["target_lpa_name"] = ""
+    st.session_state["target_nca_name"] = ""
+    st.session_state["lpa_neighbors"] = []
+    st.session_state["nca_neighbors"] = []
+    st.session_state["lpa_neighbors_norm"] = []
+    st.session_state["nca_neighbors_norm"] = []
+    st.session_state["target_lat"] = None
+    st.session_state["target_lon"] = None
+    st.session_state["lpa_geojson"] = None
+    st.session_state["nca_geojson"] = None
+    st.session_state["last_alloc_df"] = None
+    st.session_state["bank_geo_cache"] = {}
+    st.session_state["bank_catchment_geo"] = {}
+    st.session_state["optimization_complete"] = False
+    st.session_state["manual_hedgerow_rows"] = []
+    st.session_state["manual_watercourse_rows"] = []
+    st.session_state["_next_manual_hedgerow_id"] = 1
+    st.session_state["_next_manual_watercourse_id"] = 1
+    st.session_state["email_client_name"] = "INSERT NAME"
+    st.session_state["email_ref_number"] = "BNG00XXX"
+    st.session_state["email_location"] = "INSERT LOCATION"
+    st.session_state["map_version"] = st.session_state.get("map_version", 0) + 1
     # Clear location input fields
-    st.session_state.postcode_input = ""
-    st.session_state.address_input = ""
+    st.session_state["postcode_input"] = ""
+    st.session_state["address_input"] = ""
     # Clear summary dataframes
-    if "site_hab_totals" in st.session_state:
-        st.session_state.site_hab_totals = None
-    if "by_bank" in st.session_state:
-        st.session_state.by_bank = None
-    if "by_hab" in st.session_state:
-        st.session_state.by_hab = None
-    if "summary_df" in st.session_state:
-        st.session_state.summary_df = None
-    if "total_cost" in st.session_state:
-        st.session_state.total_cost = None
-    if "contract_size" in st.session_state:
-        st.session_state.contract_size = None
+    st.session_state["site_hab_totals"] = None
+    st.session_state["by_bank"] = None
+    st.session_state["by_hab"] = None
+    st.session_state["summary_df"] = None
+    st.session_state["total_cost"] = None
+    st.session_state["contract_size"] = None
 
 init_session_state()
 
