@@ -817,11 +817,12 @@ with st.container():
     try:
         if has_results:
             current_map = build_results_map(st.session_state["last_alloc_df"])
+            # Use dynamic key when showing results to force refresh
+            map_key = f"bng_results_map_{st.session_state.get('map_version', 0)}"
         else:
             current_map = build_base_map()
-        
-        # Use a simple, stable key
-        map_key = "bng_stable_map"
+            # Use stable key for base map
+            map_key = "bng_base_map"
         
         # Render with folium_static for maximum stability
         if folium_static:
@@ -867,7 +868,7 @@ with st.container(border=True):
     with cc1:
         if st.button("➕ Add habitat", key="add_hab_btn"):
             st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                {"id": st.session_state._next_row_id, "habitat_name": "", "units": 0.0}
             )
             st.session_state._next_row_id += 1
             st.rerun()
@@ -1710,6 +1711,8 @@ if run:
         # NOW save results and set completion flag
         st.session_state["last_alloc_df"] = alloc_df.copy()
         st.session_state["optimization_complete"] = True
+        # Increment map version to force refresh
+        st.session_state["map_version"] = st.session_state.get("map_version", 0) + 1
         
         # Show what we loaded
         if catchments_loaded:
@@ -2112,6 +2115,19 @@ if (st.session_state.get("optimization_complete", False) and
     
     # Calculate total cost from session data
     session_total_cost = session_alloc_df["cost"].sum()
+    session_total_with_admin = session_total_cost + ADMIN_FEE_GBP
+    
+    st.markdown("---")
+    st.markdown("### 💰 Quote Summary")
+    
+    # Display financial summary in a prominent way that persists
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Subtotal (units)", f"£{session_total_cost:,.0f}")
+    with col2:
+        st.metric("Admin fee", f"£{ADMIN_FEE_GBP:,.0f}")
+    with col3:
+        st.metric("Grand total", f"£{session_total_with_admin:,.0f}", help="Total including admin fee")
     
     st.markdown("---")
     st.markdown("#### 📧 Client Report Generation")
