@@ -38,8 +38,7 @@ UA = {"User-Agent": "WildCapital-Optimiser/1.0 (+contact@example.com)"}
 LEDGER_AREA = "area"
 LEDGER_HEDGE = "hedgerow"
 LEDGER_WATER = "watercourse"
-NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
-NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
+
 NET_GAIN_WATERCOURSE_LABEL = "Net Gain (Watercourses)"  # new
 POSTCODES_IO = "https://api.postcodes.io/postcodes/"
 NOMINATIM_SEARCH = "https://nominatim.openstreetmap.org/search"
@@ -99,64 +98,53 @@ def init_session_state():
 
 def reset_quote():
     """Reset all quote-related session state to start a new quote"""
-    try:
-        # First, delete all widget-bound keys for existing demand rows
-        # This must happen BEFORE resetting demand_rows to clear the widget state
-        if "demand_rows" in st.session_state:
-            for row in st.session_state["demand_rows"]:
-                row_id = row.get("id")
-                # Delete habitat selectbox key
-                hab_key = f"hab_{row_id}"
-                if hab_key in st.session_state:
-                    del st.session_state[hab_key]
-                # Delete units number_input key
-                units_key = f"units_{row_id}"
-                if units_key in st.session_state:
-                    del st.session_state[units_key]
-        
-        # Now reset demand_rows data
-        st.session_state["demand_rows"] = [{"id": 1, "habitat_name": "", "units": 0.0}]
-        st.session_state["_next_row_id"] = 2
-        st.session_state["target_lpa_name"] = ""
-        st.session_state["target_nca_name"] = ""
-        st.session_state["lpa_neighbors"] = []
-        st.session_state["nca_neighbors"] = []
-        st.session_state["lpa_neighbors_norm"] = []
-        st.session_state["nca_neighbors_norm"] = []
-        st.session_state["target_lat"] = None
-        st.session_state["target_lon"] = None
-        st.session_state["lpa_geojson"] = None
-        st.session_state["nca_geojson"] = None
-        st.session_state["last_alloc_df"] = None
-        st.session_state["bank_geo_cache"] = {}
-        st.session_state["bank_catchment_geo"] = {}
-        st.session_state["optimization_complete"] = False
-        st.session_state["manual_hedgerow_rows"] = []
-        st.session_state["manual_watercourse_rows"] = []
-        st.session_state["_next_manual_hedgerow_id"] = 1
-        st.session_state["_next_manual_watercourse_id"] = 1
-        st.session_state["email_client_name"] = "INSERT NAME"
-        st.session_state["email_ref_number"] = "BNG00XXX"
-        st.session_state["email_location"] = "INSERT LOCATION"
-        st.session_state["map_version"] = st.session_state.get("map_version", 0) + 1
-        # Clear location input fields by deleting them (widget-bound variables)
-        if "postcode_input" in st.session_state:
-            del st.session_state["postcode_input"]
-        if "address_input" in st.session_state:
-            del st.session_state["address_input"]
-        # Clear summary dataframes
-        st.session_state["site_hab_totals"] = None
-        st.session_state["by_bank"] = None
-        st.session_state["by_hab"] = None
-        st.session_state["summary_df"] = None
-        st.session_state["total_cost"] = None
-        st.session_state["contract_size"] = None
-    except Exception as e:
-        st.error(f"Error resetting quote: {e}")
-        # Re-initialize session state as fallback
-        init_session_state()
+    st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
+    st.session_state._next_row_id = 2
+    st.session_state.target_lpa_name = ""
+    st.session_state.target_nca_name = ""
+    st.session_state.lpa_neighbors = []
+    st.session_state.nca_neighbors = []
+    st.session_state.lpa_neighbors_norm = []
+    st.session_state.nca_neighbors_norm = []
+    st.session_state.target_lat = None
+    st.session_state.target_lon = None
+    st.session_state.lpa_geojson = None
+    st.session_state.nca_geojson = None
+    st.session_state.last_alloc_df = None
+    st.session_state.bank_geo_cache = {}
+    st.session_state.bank_catchment_geo = {}
+    st.session_state.optimization_complete = False
+    st.session_state.manual_hedgerow_rows = []
+    st.session_state.manual_watercourse_rows = []
+    st.session_state._next_manual_hedgerow_id = 1
+    st.session_state._next_manual_watercourse_id = 1
+    st.session_state.email_client_name = "INSERT NAME"
+    st.session_state.email_ref_number = "BNG00XXX"
+    st.session_state.email_location = "INSERT LOCATION"
+    st.session_state.map_version += 1
+    # Clear location input fields
+    st.session_state.postcode_input = ""
+    st.session_state.address_input = ""
+    # Clear summary dataframes
+    if "site_hab_totals" in st.session_state:
+        st.session_state.site_hab_totals = None
+    if "by_bank" in st.session_state:
+        st.session_state.by_bank = None
+    if "by_hab" in st.session_state:
+        st.session_state.by_hab = None
+    if "summary_df" in st.session_state:
+        st.session_state.summary_df = None
+    if "total_cost" in st.session_state:
+        st.session_state.total_cost = None
+    if "contract_size" in st.session_state:
+        st.session_state.contract_size = None
 
 init_session_state()
+
+# Check if we need to refresh the map after optimization (MUST be very early in script)
+if st.session_state.get("needs_map_refresh", False):
+    st.session_state["needs_map_refresh"] = False
+    st.rerun()
 
 # ================= Safe strings =================
 def sstr(x) -> str:
@@ -197,6 +185,8 @@ def is_hedgerow(name: str) -> bool:
 
 def is_watercourse(name: str) -> bool:
     name_str = sstr(name)
+    
+    # Check UmbrellaType column if backend is loaded
     try:
         if backend and "HabitatCatalog" in backend:
             catalog = backend["HabitatCatalog"]
@@ -207,9 +197,10 @@ def is_watercourse(name: str) -> bool:
                     return umbrella_type == "watercourse"
     except Exception:
         pass
-    # Fallback: narrower textual cues
-    nl = name_str.lower()
-    return any(k in nl for k in ["watercourse", "river", "stream", "ditch"])
+    
+    # Fallback to text matching
+    name_lower = name_str.lower()
+    return "watercourse" in name_lower or "water" in name_lower
 
 def get_hedgerow_habitats(catalog_df: pd.DataFrame) -> List[str]:
     """Get list of hedgerow habitats from catalog using UmbrellaType column"""
@@ -388,22 +379,14 @@ def arcgis_point_query(layer_url: str, lat: float, lon: float, out_fields: str) 
     feats = js.get("features") or []
     return feats[0] if feats else {}
 
-def layer_neighbor_names(layer_url: str,
-                         polygon_geom: Dict[str, Any],
-                         name_field: str,
-                         spatial_rel: str = "esriSpatialRelTouches") -> List[str]:
+def layer_intersect_names(layer_url: str, polygon_geom: Dict[str, Any], name_field: str) -> List[str]:
     if not polygon_geom:
         return []
     data = {
-        "f": "json",
-        "where": "1=1",
-        "geometry": json.dumps(polygon_geom),
-        "geometryType": "esriGeometryPolygon",
-        "inSR": 4326,
-        "spatialRel": spatial_rel,          # <-- Touches by default
-        "outFields": name_field,
-        "returnGeometry": "false",
-        "outSR": 4326,
+        "f": "json", "where": "1=1",
+        "geometry": json.dumps(polygon_geom), "geometryType": "esriGeometryPolygon",
+        "inSR": 4326, "spatialRel": "esriSpatialRelIntersects",
+        "outFields": name_field, "returnGeometry": "false", "outSR": 4326,
         "geometryPrecision": 5,
     }
     r = http_post(f"{layer_url}/query", data=data)
@@ -431,56 +414,22 @@ def tier_for_bank(bank_lpa: str, bank_nca: str,
                   lpa_neigh: List[str], nca_neigh: List[str],
                   lpa_neigh_norm: Optional[List[str]] = None,
                   nca_neigh_norm: Optional[List[str]] = None) -> str:
-    """
-    Robust tiering:
-    - Normalises *all* inputs internally (ignores stale/misaligned _norm lists).
-    - Treats 'local' if LPA OR NCA match the target.
-    - Treats 'adjacent' if LPA OR NCA are in the (normalised) neighbour sets.
-    - Otherwise 'far'.
-    """
-
-    def n(s: str) -> str:
-        return norm_name(s)  # your existing normaliser
-
-    # Bank side
-    b_lpa_n = n(bank_lpa)
-    b_nca_n = n(bank_nca)
-
-    # Target side
-    t_lpa_n = n(t_lpa)
-    t_nca_n = n(t_nca)
-
-    # Build normalised neighbour sets *here* (don’t trust passed-in _norm to be aligned)
-    lpa_neigh_set = {n(x) for x in (lpa_neigh or [])}
-    nca_neigh_set = {n(x) for x in (nca_neigh or [])}
-
-    # Local if either axis matches exactly
-    if b_lpa_n and t_lpa_n and b_lpa_n == t_lpa_n:
+    b_lpa = norm_name(bank_lpa)
+    b_nca = norm_name(bank_nca)
+    t_lpa_n = norm_name(t_lpa)
+    t_nca_n = norm_name(t_nca)
+    if lpa_neigh_norm is None:
+        lpa_neigh_norm = [norm_name(x) for x in (lpa_neigh or [])]
+    if nca_neigh_norm is None:
+        nca_neigh_norm = [norm_name(x) for x in (nca_neigh or [])]
+    if b_lpa and t_lpa_n and b_lpa == t_lpa_n:
         return "local"
-    if b_nca_n and t_nca_n and b_nca_n == t_nca_n:
+    if b_nca and t_nca_n and b_nca == t_nca_n:
         return "local"
-
-    # Adjacent if either axis is in the neighbour set
-    if b_lpa_n and b_lpa_n in lpa_neigh_set:
+    if b_lpa and b_lpa in lpa_neigh_norm:
         return "adjacent"
-    if b_nca_n and b_nca_n in nca_neigh_set:
+    if b_nca and b_nca in nca_neigh_norm:
         return "adjacent"
-
-    # Last-ditch: sometimes bank LPA is an older label; try a soft containment check
-    def soft_match(bank_val: str, neighs: List[str]) -> bool:
-        if not bank_val:
-            return False
-        bv = n(bank_val)
-        for nn in neighs or []:
-            if bv and (bv in n(nn) or n(nn) in bv):
-                return True
-        return False
-
-    if soft_match(bank_lpa, lpa_neigh):
-        return "adjacent"
-    if soft_match(bank_nca, nca_neigh):
-        return "adjacent"
-
     return "far"
 
 def select_contract_size(total_units: float, present: List[str]) -> str:
@@ -629,28 +578,6 @@ def enrich_banks_geography(banks_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 backend["Banks"] = enrich_banks_geography(backend["Banks"])
-def refresh_selected_banks_geography(selected_bank_keys: List[str]):
-    banks_df = backend["Banks"].copy()
-    changed = 0
-    for i, row in banks_df.iterrows():
-        bkey = sstr(row.get("BANK_KEY") or row.get("bank_name") or row.get("bank_id"))
-        if bkey not in set(map(sstr, selected_bank_keys)):
-            continue
-        loc = bank_row_to_latlon(row)
-        if not loc:
-            continue
-        lat, lon, _ = loc
-        try:
-            lpa, nca = get_lpa_nca_for_point(lat, lon)
-            if sstr(row.get("lpa_name")) != lpa or sstr(row.get("nca_name")) != nca:
-                banks_df.at[i, "lpa_name"] = lpa
-                banks_df.at[i, "nca_name"] = nca
-                changed += 1
-        except Exception:
-            pass
-    if changed:
-        backend["Banks"] = make_bank_key_col(banks_df, banks_df)
-
 backend["Banks"] = make_bank_key_col(backend["Banks"], backend["Banks"])
 
 # Validate minimal columns
@@ -692,19 +619,14 @@ dist_levels_map = {
 }
 dist_levels_map.update({k.lower(): v for k, v in list(dist_levels_map.items())})
 
-# Check if we need to refresh the map after optimization (after backend is loaded)
-if st.session_state.get("needs_map_refresh", False):
-    st.session_state["needs_map_refresh"] = False
-    st.rerun()
-
 # ================= Locate UI =================
 with st.container():
     st.subheader("1) Locate target site")
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
-        postcode = st.text_input("Postcode (quicker)", key="postcode_input")
+        postcode = st.text_input("Postcode (quicker)", value=st.session_state.get("postcode_input", ""), key="postcode_input")
     with c2:
-        address = st.text_input("Address (if no postcode)", key="address_input")
+        address = st.text_input("Address (if no postcode)", value=st.session_state.get("address_input", ""), key="address_input")
     with c3:
         run_locate = st.button("Locate", key="locate_btn")
 
@@ -723,8 +645,8 @@ def find_site(postcode: str, address: str):
     nca_geom_esri = nca_feat.get("geometry")
     lpa_gj = esri_polygon_to_geojson(lpa_geom_esri)
     nca_gj = esri_polygon_to_geojson(nca_geom_esri)
-    lpa_nei = [n for n in layer_neighbor_names(LPA_URL, lpa_geom_esri, "LAD24NM", "esriSpatialRelTouches") if n != t_lpa]
-    nca_nei = [n for n in layer_neighbor_names(NCA_URL, nca_geom_esri, "NCA_Name", "esriSpatialRelTouches") if n != t_nca]
+    lpa_nei = [n for n in layer_intersect_names(LPA_URL, lpa_geom_esri, "LAD24NM") if n != t_lpa]
+    nca_nei = [n for n in layer_intersect_names(NCA_URL, nca_geom_esri, "NCA_Name") if n != t_nca]
     lpa_nei_norm = [norm_name(n) for n in lpa_nei]
     nca_nei_norm = [norm_name(n) for n in nca_nei]
     
@@ -864,7 +786,7 @@ def build_results_map(alloc_df: pd.DataFrame):
             if bgeo.get("lpa_gj"):
                 folium.GeoJson(
                     bgeo["lpa_gj"],
-                    name=f"🏢 {bank_display_name} - LPA",
+                    name=f"🏢 {bank_display_name} - Catchment Area",
                     style_function=lambda x: {
                         "fillColor": "green", 
                         "color": "green",  # Green border
@@ -880,7 +802,7 @@ def build_results_map(alloc_df: pd.DataFrame):
             if bgeo.get("nca_gj"):
                 folium.GeoJson(
                     bgeo["nca_gj"],
-                    name=f"🌿 {bank_display_name} - NCA",
+                    name=f"🌿 {bank_display_name} - Extended Catchment",
                     style_function=lambda x: {
                         "fillColor": "green", 
                         "color": "green",  # Green border
@@ -1015,7 +937,8 @@ with st.container():
 
 # ================= Demand =================
 st.subheader("2) Demand (units required)")
-
+NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
+NET_GAIN_HEDGEROW_LABEL = "Net Gain (Hedgerows)"
 
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
@@ -2016,6 +1939,7 @@ with left:
 with middle:
     if st.button("🔄 Start New Quote", key="start_new_quote_btn", help="Clear all inputs and start fresh"):
         reset_quote()
+        st.rerun()
 with right:
     if st.session_state["target_lpa_name"] or st.session_state["target_nca_name"]:
         st.caption(f"LPA: {st.session_state['target_lpa_name'] or '—'} | NCA: {st.session_state['target_nca_name'] or '—'} | "
@@ -2239,8 +2163,7 @@ if run:
 
         # Validate against catalog — allow special Net Gain labels
         cat_names_run = set(backend["HabitatCatalog"]["habitat_name"].astype(str))
-        unknown = [h for h in demand_df["habitat_name"]
-           if h not in cat_names_run and h not in [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL, NET_GAIN_WATERCOURSE_LABEL]]
+        unknown = [h for h in demand_df["habitat_name"] if h not in cat_names_run and h not in [NET_GAIN_LABEL, NET_GAIN_HEDGEROW_LABEL]]
         if unknown:
             st.error(f"These demand habitats aren't in the catalog: {unknown}")
             st.stop()
@@ -2414,9 +2337,8 @@ if run:
         st.session_state["total_cost"] = total_cost
         st.session_state["contract_size"] = size
         
-        # Trigger immediate map refresh
+        # Trigger map refresh by setting a flag
         st.session_state["needs_map_refresh"] = True
-        st.rerun()
 
     except Exception as e:
         st.error(f"Optimiser error: {e}")
@@ -2925,7 +2847,7 @@ if st.session_state.get("optimization_complete", False) and st.session_state.get
         )
     
     # Show allocation detail in expander
-    with st.expander("📋 Allocation detail", expanded=True):
+    with st.expander("📋 Allocation detail", expanded=False):
         alloc_df = st.session_state["last_alloc_df"]
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
@@ -2933,7 +2855,7 @@ if st.session_state.get("optimization_complete", False) and st.session_state.get
     
     # Show Site/Habitat totals in expander
     if st.session_state.get("site_hab_totals") is not None:
-        with st.expander("📊 Site/Habitat totals (effective units)", expanded=True):
+        with st.expander("📊 Site/Habitat totals (effective units)", expanded=False):
             st.dataframe(st.session_state["site_hab_totals"], use_container_width=True, hide_index=True)
     
     # Show By bank in expander
@@ -2967,7 +2889,7 @@ if st.session_state.get("optimization_complete", False):
         st.markdown("**🌿 Manual Hedgerow Units**")
         
         # Add Net Gain option to hedgerow choices
-        hedgerow_choices_with_ng = hedgerow_choices + [NET_GAIN_HEDGEROW_LABEL] if hedgerow_choices else [NET_GAIN_HEDGEROW_LABEL]
+        hedgerow_choices_with_ng = hedgerow_choices + [NET_GAIN_LABEL] if hedgerow_choices else [NET_GAIN_LABEL]
         
         to_delete_hedgerow = []
         for idx, row in enumerate(st.session_state.manual_hedgerow_rows):
@@ -3038,7 +2960,7 @@ if st.session_state.get("optimization_complete", False):
         st.markdown("**💧 Manual Watercourse Units**")
         
         # Add Net Gain option to watercourse choices
-        watercourse_choices_with_ng = watercourse_choices + [NET_GAIN_WATERCOURSE_LABEL] if watercourse_choices else [NET_GAIN_WATERCOURSE_LABEL]
+        watercourse_choices_with_ng = watercourse_choices + [NET_GAIN_LABEL] if watercourse_choices else [NET_GAIN_LABEL]
         
         to_delete_watercourse = []
         for idx, row in enumerate(st.session_state.manual_watercourse_rows):
@@ -3293,6 +3215,48 @@ if st.checkbox("Show detailed debug info", value=False):
     st.write(f"- folium imported: {folium is not None}")
     st.write(f"- st_folium imported: {st_folium is not None}")
     st.write(f"- folium_static available: {folium_static is not None}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
