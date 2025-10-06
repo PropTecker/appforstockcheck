@@ -125,6 +125,19 @@ def reset_quote():
     # Clear location input fields
     st.session_state.postcode_input = ""
     st.session_state.address_input = ""
+    # Clear summary dataframes
+    if "site_hab_totals" in st.session_state:
+        st.session_state.site_hab_totals = None
+    if "by_bank" in st.session_state:
+        st.session_state.by_bank = None
+    if "by_hab" in st.session_state:
+        st.session_state.by_hab = None
+    if "summary_df" in st.session_state:
+        st.session_state.summary_df = None
+    if "total_cost" in st.session_state:
+        st.session_state.total_cost = None
+    if "contract_size" in st.session_state:
+        st.session_state.contract_size = None
 
 init_session_state()
 
@@ -2329,6 +2342,14 @@ if run:
         ])
         st.dataframe(summary_df, hide_index=True, use_container_width=True)
         
+        # Save summary data to session state for persistence
+        st.session_state["site_hab_totals"] = site_hab_totals.copy()
+        st.session_state["by_bank"] = by_bank.copy()
+        st.session_state["by_hab"] = by_hab.copy()
+        st.session_state["summary_df"] = summary_df.copy()
+        st.session_state["total_cost"] = total_cost
+        st.session_state["contract_size"] = size
+        
         # Trigger map refresh by setting a flag
         st.session_state["needs_map_refresh"] = True
 
@@ -2828,12 +2849,42 @@ if st.session_state.get("optimization_complete", False) and st.session_state.get
     st.markdown("---")
     st.markdown("### 📊 Optimization Results")
     
-    # Show allocation detail
-    st.markdown("#### Allocation detail")
-    alloc_df = st.session_state["last_alloc_df"]
-    st.dataframe(alloc_df, use_container_width=True)
-    if "price_source" in alloc_df.columns:
-        st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
+    # Show summary at top
+    if st.session_state.get("contract_size") and st.session_state.get("total_cost") is not None:
+        total_cost = st.session_state["total_cost"]
+        total_with_admin = total_cost + ADMIN_FEE_GBP
+        st.success(
+            f"Contract size = **{st.session_state['contract_size']}**. "
+            f"Subtotal (units): **£{total_cost:,.0f}**  |  Admin fee: **£{ADMIN_FEE_GBP:,.0f}**  |  "
+            f"Grand total: **£{total_with_admin:,.0f}**"
+        )
+    
+    # Show allocation detail in expander
+    with st.expander("📋 Allocation detail", expanded=False):
+        alloc_df = st.session_state["last_alloc_df"]
+        st.dataframe(alloc_df, use_container_width=True)
+        if "price_source" in alloc_df.columns:
+            st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
+    
+    # Show Site/Habitat totals in expander
+    if st.session_state.get("site_hab_totals") is not None:
+        with st.expander("📊 Site/Habitat totals (effective units)", expanded=False):
+            st.dataframe(st.session_state["site_hab_totals"], use_container_width=True, hide_index=True)
+    
+    # Show By bank in expander
+    if st.session_state.get("by_bank") is not None:
+        with st.expander("🏢 By bank", expanded=False):
+            st.dataframe(st.session_state["by_bank"], use_container_width=True)
+    
+    # Show By habitat in expander
+    if st.session_state.get("by_hab") is not None:
+        with st.expander("🌿 By habitat (supply)", expanded=False):
+            st.dataframe(st.session_state["by_hab"], use_container_width=True)
+    
+    # Show Order summary in expander
+    if st.session_state.get("summary_df") is not None:
+        with st.expander("💰 Order summary (with admin fee)", expanded=True):
+            st.dataframe(st.session_state["summary_df"], hide_index=True, use_container_width=True)
 
 # ========== MANUAL HEDGEROW/WATERCOURSE ENTRIES (PERSISTENT) ==========
 # This section persists across reruns because it's outside the "if run:" block
