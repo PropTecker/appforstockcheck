@@ -244,7 +244,7 @@ def get_watercourse_habitats(catalog_df: pd.DataFrame) -> List[str]:
 
 # ================= Login =================
 DEFAULT_USER = "WC0323"
-DEFAULT_PASS = "Wimbourne"
+DEFAULT_PASS = "Wimborne"
 
 def require_login():
     if st.session_state.auth_ok:
