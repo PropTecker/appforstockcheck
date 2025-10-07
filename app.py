@@ -1,4 +1,11 @@
-# app.py — BNG Optimiser (Standalone), v9.13
+# app.py — BNG Optimiser (Standalone), v9.14
+# Changes in v9.14:
+# - Generalized Orchard stacking: added ADJACENT (SRM 1.33) tier support
+# - Implemented dynamic "Other" component selection (cheapest eligible area habitat ≤ Medium distinctiveness)
+# - Updated pairing mix: ADJACENT uses 1.00 Orchard + 0.33 Other; FAR uses 0.50 Orchard + 0.50 Other
+# - Enhanced split_paired_rows to handle non-50/50 splits correctly
+# - Pricing: Adjacent = (1.00*orchard + 0.33*other) / 1.33; Far = 0.5*orchard + 0.5*other
+#
 # Changes in v9.13:
 # - Added "Start New Quote" button with comprehensive reset functionality
 # - Implemented automatic map refresh after optimization completes
