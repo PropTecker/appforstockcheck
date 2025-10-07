@@ -1376,7 +1376,7 @@ def prepare_options(demand_df: pd.DataFrame,
                     (stock_full["habitat_name"] != ORCHARD_NAME) &
                     (~stock_full["habitat_name"].map(is_hedgerow)) &
                     (stock_full["distinctiveness_name"].map(lambda x: dval(x) <= dval("Medium"))) &
-                    (stock_full["quantity_available"] > 0)
+                    (stock_full["quantity_available"].astype(float) > 0)
                 ].copy()
                 
                 if other_candidates.empty:
