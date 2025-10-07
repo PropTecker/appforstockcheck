@@ -1355,36 +1355,85 @@ def prepare_options(demand_df: pd.DataFrame,
                 "price_habitat": price_hab_used,
             })
 
-        # Paired Orchard+Scrub for MEDIUM — FAR ONLY, 50/50 by UNITS (prices kept separate)
-        if sstr(d_dist).lower() == "medium" and ORCHARD_NAME and SCRUB_NAME:
+        # Paired Orchard+Other for MEDIUM — ADJACENT and FAR
+        if sstr(d_dist).lower() == "medium" and ORCHARD_NAME:
             banks_keys = stock_full["BANK_KEY"].dropna().unique().tolist()
             for bk in banks_keys:
                 orch_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (stock_full["habitat_name"] == ORCHARD_NAME)]
-                scrub_rows = stock_full[(stock_full["BANK_KEY"] == bk) & (
-                    (stock_full["habitat_name"] == SCRUB_NAME) |
-                    (stock_full["habitat_name"].str.contains("scrub", case=False, na=False)) |
-                    (stock_full["habitat_name"].str.contains("bramble", case=False, na=False))
-                )]
-                if orch_rows.empty or scrub_rows.empty:
+                if orch_rows.empty:
                     continue
+                
+                # Get "Other" candidates: area habitats with distinctiveness <= Medium, positive stock
+                other_candidates = stock_full[
+                    (stock_full["BANK_KEY"] == bk) &
+                    (stock_full["habitat_name"] != ORCHARD_NAME) &
+                    (~stock_full["habitat_name"].map(is_hedgerow)) &
+                    (stock_full["distinctiveness_name"].map(lambda x: dval(x) <= dval("Medium"))) &
+                    (stock_full["quantity_available"] > 0)
+                ].copy()
+                
+                if other_candidates.empty:
+                    continue
+                
+                # Process each Orchard stock entry
                 for _, o in orch_rows.iterrows():
-                    for _, s2 in scrub_rows.iterrows():
-                        tier_b = tier_for_bank(
-                            sstr(s2.get("lpa_name")), sstr(s2.get("nca_name")),
-                            target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
-                        )
-                        if tier_b != "far":
+                    cap_o = float(o.get("quantity_available", 0) or 0.0)
+                    if cap_o <= 0:
+                        continue
+                    
+                    # For each tier (adjacent and far), find the best "Other" component
+                    for target_tier in ["adjacent", "far"]:
+                        # Find "Other" candidates at this tier with valid prices
+                        tier_other_candidates = []
+                        for _, other_row in other_candidates.iterrows():
+                            tier_test = tier_for_bank(
+                                sstr(other_row.get("lpa_name")), sstr(other_row.get("nca_name")),
+                                target_lpa, target_nca, lpa_neigh, nca_neigh, lpa_neigh_norm, nca_neigh_norm
+                            )
+                            if tier_test != target_tier:
+                                continue
+                            
+                            # Check if we can price this "Other" component
+                            pi_other = find_price_for_supply(bk, other_row["habitat_name"], target_tier, d_broader, d_dist)
+                            if not pi_other:
+                                continue
+                            
+                            tier_other_candidates.append({
+                                "row": other_row,
+                                "price": float(pi_other[0]),
+                                "price_info": pi_other,
+                                "cap": float(other_row.get("quantity_available", 0) or 0.0)
+                            })
+                        
+                        if not tier_other_candidates:
                             continue
-                        pi_o = find_price_for_supply(bk, ORCHARD_NAME, tier_b, d_broader, d_dist)
-                        pi_s = find_price_for_supply(bk, s2["habitat_name"], tier_b, d_broader, d_dist)
-                        if not pi_o or not pi_s:
+                        
+                        # Sort by price (ascending), then by available stock (descending) for tie-breaking
+                        tier_other_candidates.sort(key=lambda x: (x["price"], -x["cap"]))
+                        best_other = tier_other_candidates[0]
+                        
+                        # Get Orchard price at this tier
+                        pi_o = find_price_for_supply(bk, ORCHARD_NAME, target_tier, d_broader, d_dist)
+                        if not pi_o:
                             continue
-                        cap_o = float(o.get("quantity_available", 0) or 0.0)
-                        cap_s = float(s2.get("quantity_available", 0) or 0.0)
-                        if cap_o <= 0 or cap_s <= 0:
-                            continue
-                        price_o = float(pi_o[0]); price_s = float(pi_s[0])
-                        avg_price = 0.5 * price_o + 0.5 * price_s  # for optimisation only
+                        
+                        price_o = float(pi_o[0])
+                        price_other = best_other["price"]
+                        other_row = best_other["row"]
+                        pi_other = best_other["price_info"]
+                        
+                        # Calculate blended price and stock_use based on tier
+                        if target_tier == "adjacent":
+                            # Adjacent: 1.00 Orchard + 0.33 Other per 1.00 demand unit
+                            blended_price = (1.00 * price_o + 0.33 * price_other) / 1.33
+                            stock_use_orchard = 1.00
+                            stock_use_other = 0.33
+                        else:  # far
+                            # Far: 0.50 Orchard + 0.50 Other per 1.00 demand unit
+                            blended_price = 0.5 * price_o + 0.5 * price_other
+                            stock_use_orchard = 0.50
+                            stock_use_other = 0.50
+                        
                         options.append({
                             "type": "paired",
                             "demand_idx": di,
@@ -1392,16 +1441,16 @@ def prepare_options(demand_df: pd.DataFrame,
                             "BANK_KEY": bk,
                             "bank_name": sstr(o.get("bank_name")),
                             "bank_id": sstr(o.get("bank_id")),
-                            "supply_habitat": f"{ORCHARD_NAME} + {sstr(s2['habitat_name'])}",
-                            "tier": tier_b,
-                            "proximity": tier_b,
-                            "unit_price": avg_price,
-                            "stock_use": {sstr(o["stock_id"]): 0.5, sstr(s2["stock_id"]): 0.5},
+                            "supply_habitat": f"{ORCHARD_NAME} + {sstr(other_row['habitat_name'])}",
+                            "tier": target_tier,
+                            "proximity": target_tier,
+                            "unit_price": blended_price,
+                            "stock_use": {sstr(o["stock_id"]): stock_use_orchard, sstr(other_row["stock_id"]): stock_use_other},
                             "price_source": "group-proxy",
-                            "price_habitat": f"{pi_o[2]} + {pi_s[2]}",
+                            "price_habitat": f"{pi_o[2]} + {pi_other[2]}",
                             "paired_parts": [
-                                {"habitat": ORCHARD_NAME, "unit_price": price_o},
-                                {"habitat": sstr(s2["habitat_name"]), "unit_price": price_s},
+                                {"habitat": ORCHARD_NAME, "unit_price": price_o, "stock_use": stock_use_orchard},
+                                {"habitat": sstr(other_row["habitat_name"]), "unit_price": price_other, "stock_use": stock_use_other},
                             ],
                         })
 
@@ -2278,7 +2327,7 @@ if run:
                     rows.append(r.to_dict())
                     continue
 
-                # Extract paired parts (each has its own unit price)
+                # Extract paired parts (each has its own unit price and stock_use)
                 parts = []
                 try:
                     parts = json.loads(sstr(r.get("paired_parts")))
@@ -2289,18 +2338,21 @@ if run:
                 name_parts = [p.strip() for p in sh.split("+")] if sh else []
 
                 units_total = float(r.get("units_supplied", 0.0) or 0.0)
-                units_each = 0.5 * units_total
 
                 if len(parts) == 2:
                     for idx, part in enumerate(parts):
                         rr = r.to_dict()
                         rr["supply_habitat"] = sstr(part.get("habitat") or (name_parts[idx] if idx < len(name_parts) else f"Part {idx+1}"))
-                        rr["units_supplied"] = units_each
+                        
+                        # Use stock_use ratio if available, otherwise default to 0.5
+                        stock_use_ratio = float(part.get("stock_use", 0.5))
+                        rr["units_supplied"] = units_total * stock_use_ratio
                         rr["unit_price"] = float(part.get("unit_price", rr.get("unit_price", 0.0)))
-                        rr["cost"] = units_each * rr["unit_price"]
+                        rr["cost"] = rr["units_supplied"] * rr["unit_price"]
                         rows.append(rr)
                 else:
-                    # Fallback: split cost/units evenly
+                    # Fallback: split cost/units evenly (50/50)
+                    units_each = 0.5 * units_total
                     if len(name_parts) == 2:
                         for part_name in name_parts:
                             rr = r.to_dict()
