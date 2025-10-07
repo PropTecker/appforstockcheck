@@ -1,10 +1,10 @@
 # app.py — BNG Optimiser (Standalone), v9.14
 # Changes in v9.14:
-# - Generalized Orchard stacking: added ADJACENT (SRM 1.33) tier support
+# - Generalized Orchard stacking: added ADJACENT (SRM 4/3) tier support
 # - Implemented dynamic "Other" component selection (cheapest eligible area habitat ≤ Medium distinctiveness)
-# - Updated pairing mix: ADJACENT uses 1.00 Orchard + 0.33 Other; FAR uses 0.50 Orchard + 0.50 Other
+# - Updated pairing mix: ADJACENT uses 1.00 Orchard + 1/3 Other (75%/25% split); FAR uses 0.50 Orchard + 0.50 Other
 # - Enhanced split_paired_rows to handle non-50/50 splits correctly
-# - Pricing: Adjacent = (1.00*orchard + 0.33*other) / 1.33; Far = 0.5*orchard + 0.5*other
+# - Pricing: Adjacent = (1.00*orchard + (1/3)*other) / (4/3); Far = 0.5*orchard + 0.5*other
 #
 # Changes in v9.13:
 # - Added "Start New Quote" button with comprehensive reset functionality
@@ -1431,10 +1431,10 @@ def prepare_options(demand_df: pd.DataFrame,
                         
                         # Calculate blended price and stock_use based on tier
                         if target_tier == "adjacent":
-                            # Adjacent: 1.00 Orchard + 0.33 Other per 1.00 demand unit
-                            blended_price = (1.00 * price_o + 0.33 * price_other) / 1.33
+                            # Adjacent: 1.00 Orchard + 1/3 Other per 1.00 demand unit (75%/25% split)
+                            blended_price = (1.00 * price_o + (1/3) * price_other) / (4/3)
                             stock_use_orchard = 1.00
-                            stock_use_other = 0.33
+                            stock_use_other = 1/3
                         else:  # far
                             # Far: 0.50 Orchard + 0.50 Other per 1.00 demand unit
                             blended_price = 0.5 * price_o + 0.5 * price_other
@@ -2324,7 +2324,7 @@ if run:
         # ========== PROCESS RESULTS FOR PERSISTENCE (NO INLINE DISPLAY) ==========
         # Calculate summary data and save to session state - displayed in persistent section below
         
-        MULT = {"local": 1.0, "adjacent": 1.33, "far": 2.0}
+        MULT = {"local": 1.0, "adjacent": 4/3, "far": 2.0}
 
         def split_paired_rows(df: pd.DataFrame) -> pd.DataFrame:
             if df.empty: return df
