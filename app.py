@@ -3133,18 +3133,20 @@ if (st.session_state.get("optimization_complete", False) and
     # Calculate total cost from session data (optimization only)
     session_total_cost = session_alloc_df["cost"].sum()
     
-    # Calculate manual costs separately
+    # Calculate manual costs separately (matching the logic in generate_client_report_table_fixed)
     manual_total_cost = 0.0
     for row in st.session_state.manual_hedgerow_rows:
+        habitat_name = sstr(row.get("habitat_name", ""))
         units = float(row.get("units", 0.0) or 0.0)
         price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
-        if units > 0 and price_per_unit > 0:
+        if habitat_name and units > 0:
             manual_total_cost += units * price_per_unit
     
     for row in st.session_state.manual_watercourse_rows:
+        habitat_name = sstr(row.get("habitat_name", ""))
         units = float(row.get("units", 0.0) or 0.0)
         price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
-        if units > 0 and price_per_unit > 0:
+        if habitat_name and units > 0:
             manual_total_cost += units * price_per_unit
     
     st.markdown("---")
@@ -3240,7 +3242,7 @@ if (st.session_state.get("optimization_complete", False) and
         subject = f"RE: BNG Units for site at {location} - {ref_number}"
         total_with_admin = session_total_cost + manual_total_cost + ADMIN_FEE_GBP
         
-        # Calculate total units including manual entries
+        # Calculate total units including manual entries (matching the logic in generate_client_report_table_fixed)
         total_units_required = session_demand_df['units_required'].sum()
         total_units_supplied = session_alloc_df['units_supplied'].sum()
         
