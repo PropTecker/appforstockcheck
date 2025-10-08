@@ -3130,8 +3130,22 @@ if (st.session_state.get("optimization_complete", False) and
          for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
     )
     
-    # Calculate total cost from session data
+    # Calculate total cost from session data (optimization only)
     session_total_cost = session_alloc_df["cost"].sum()
+    
+    # Calculate manual costs separately
+    manual_total_cost = 0.0
+    for row in st.session_state.manual_hedgerow_rows:
+        units = float(row.get("units", 0.0) or 0.0)
+        price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
+        if units > 0 and price_per_unit > 0:
+            manual_total_cost += units * price_per_unit
+    
+    for row in st.session_state.manual_watercourse_rows:
+        units = float(row.get("units", 0.0) or 0.0)
+        price_per_unit = float(row.get("price_per_unit", 0.0) or 0.0)
+        if units > 0 and price_per_unit > 0:
+            manual_total_cost += units * price_per_unit
     
     st.markdown("---")
     st.markdown("#### 📧 Client Report Generation")
@@ -3224,7 +3238,25 @@ if (st.session_state.get("optimization_complete", False) and
         from email.mime.text import MIMEText
         
         subject = f"RE: BNG Units for site at {location} - {ref_number}"
-        total_with_admin = session_total_cost + ADMIN_FEE_GBP
+        total_with_admin = session_total_cost + manual_total_cost + ADMIN_FEE_GBP
+        
+        # Calculate total units including manual entries
+        total_units_required = session_demand_df['units_required'].sum()
+        total_units_supplied = session_alloc_df['units_supplied'].sum()
+        
+        # Add manual hedgerow units
+        for row in st.session_state.manual_hedgerow_rows:
+            units = float(row.get("units", 0.0) or 0.0)
+            if units > 0:
+                total_units_required += units
+                total_units_supplied += units
+        
+        # Add manual watercourse units
+        for row in st.session_state.manual_watercourse_rows:
+            units = float(row.get("units", 0.0) or 0.0)
+            if units > 0:
+                total_units_required += units
+                total_units_supplied += units
         
         # Create email message
         msg = MIMEMultipart('alternative')
@@ -3249,8 +3281,8 @@ Your Quote - £{total_with_admin:,.0f} + VAT
 
 [Please view the HTML version of this email for the detailed pricing breakdown table]
 
-Total Units Required: {session_demand_df['units_required'].sum():.2f}
-Total Units Supplied: {session_alloc_df['units_supplied'].sum():.2f}
+Total Units Required: {total_units_required:.2f}
+Total Units Supplied: {total_units_supplied:.2f}
 Total Cost: £{total_with_admin:,.0f} + VAT
 
 Next Steps
