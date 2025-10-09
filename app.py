@@ -1,10 +1,11 @@
-# app.py — BNG Optimiser (Standalone), v9.12
-# Changes in v9.12:
-# - Fixed map disappearing on optimise
-# - Improved UI responsiveness
-# - Better state management
-# - Fixed flickering issues
-# - Enhanced error handling
+# app.py — BNG Optimiser + DEFRA Metric Reader (Combined), v10.0
+# Changes in v10.0:
+# - Combined BNG Optimiser with DEFRA BNG Metric Reader functionality
+# - Added database backend to replace Excel workbook
+# - Added DEFRA metric spreadsheet upload and parsing
+# - Added flow diagram visualization
+# - Maintained all existing optimization and mapping features
+# - Enhanced UI to support both manual and metric-based demand input
 
 import json
 import re
@@ -23,6 +24,17 @@ try:
 except Exception:
     folium_static = None
 import folium
+
+# Import new modules
+try:
+    from database import BNGDatabase
+    from metric_parser import DEFRAMetricParser
+    from flow_viz import create_flow_diagram, create_simple_flow_table
+    _HAS_NEW_MODULES = True
+except ImportError:
+    _HAS_NEW_MODULES = False
+    BNGDatabase = None
+    DEFRAMetricParser = None
 
 # ================= Config / constants =================
 ADMIN_FEE_GBP = 500.0
@@ -45,8 +57,8 @@ except Exception:
     _HAS_PULP = False
 
 # ================= Page Setup =================
-st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
-st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
+st.set_page_config(page_title="BNG Optimiser + Metric Reader", page_icon="🧭", layout="wide")
+st.markdown("<h2>BNG Optimiser + DEFRA Metric Reader</h2>", unsafe_allow_html=True)
 
 # ================= Initialize Session State =================
 def init_session_state():
@@ -69,7 +81,10 @@ def init_session_state():
         "bank_catchment_geo": {},
         "demand_rows": [{"id": 1, "habitat_name": "", "units": 0.0}],
         "_next_row_id": 2,
-        "optimization_complete": False
+        "optimization_complete": False,
+        "demand_source": "manual",  # 'manual' or 'metric'
+        "metric_parsed_df": None,
+        "use_database": False,
     }
     
     for key, value in defaults.items():
@@ -295,11 +310,41 @@ def select_contract_size(total_units: float, present: List[str]) -> str:
 # ================= Sidebar: backend =================
 with st.sidebar:
     st.subheader("Backend")
-    uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"])
-    if not uploaded:
-        st.info("Or use an example backend in ./data", icon="ℹ️")
-    use_example = st.checkbox("Use example backend from ./data",
-                              value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()))
+    
+    # Database or Excel backend option
+    if _HAS_NEW_MODULES:
+        backend_mode = st.radio(
+            "Backend mode",
+            ["Excel workbook", "Database"],
+            help="Choose to use Excel workbook (legacy) or Database (new)"
+        )
+        st.session_state.use_database = (backend_mode == "Database")
+    else:
+        st.session_state.use_database = False
+    
+    if st.session_state.use_database and _HAS_NEW_MODULES:
+        # Database backend
+        db_path = st.text_input("Database path", value="data/bng_backend.db")
+        
+        # Option to initialize from Excel
+        with st.expander("Initialize database from Excel"):
+            excel_init = st.file_uploader("Upload Excel to initialize DB", type=["xlsx"], key="db_init")
+            if excel_init and st.button("Initialize Database"):
+                try:
+                    db = BNGDatabase(db_path)
+                    db.init_schema()
+                    db.load_from_excel(excel_init.getvalue())
+                    st.success("Database initialized successfully!")
+                except Exception as e:
+                    st.error(f"Error initializing database: {e}")
+    else:
+        # Excel backend (original)
+        uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"])
+        if not uploaded:
+            st.info("Or use an example backend in ./data", icon="ℹ️")
+        use_example = st.checkbox("Use example backend from ./data",
+                                  value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()))
+    
     quotes_hold_policy = st.selectbox(
         "Quotes policy for stock availability",
         ["Ignore quotes (default)", "Quotes hold 100%", "Quotes hold 50%"],
@@ -322,18 +367,38 @@ def load_backend(xls_bytes) -> Dict[str, pd.DataFrame]:
     }
     return backend
 
-backend = None
-if uploaded:
-    backend = load_backend(uploaded.getvalue())
-elif use_example:
-    ex = Path("data/HabitatBackend_WITH_STOCK.xlsx")
-    if ex.exists():
-        with ex.open("rb") as f:
-            backend = load_backend(f.read())
+@st.cache_resource
+def load_backend_from_db(db_path: str) -> Dict[str, pd.DataFrame]:
+    """Load backend from database"""
+    if not _HAS_NEW_MODULES:
+        return None
+    try:
+        db = BNGDatabase(db_path)
+        return db.get_backend_dict()
+    except Exception as e:
+        st.error(f"Error loading from database: {e}")
+        return None
 
-if backend is None:
-    st.warning("Upload your backend workbook to continue.", icon="⚠️")
-    st.stop()
+backend = None
+if st.session_state.use_database and _HAS_NEW_MODULES:
+    # Load from database
+    backend = load_backend_from_db(db_path)
+    if backend is None or backend["Banks"].empty:
+        st.warning("Database not initialized or empty. Please initialize from Excel first.", icon="⚠️")
+        st.stop()
+else:
+    # Load from Excel (original behavior)
+    if uploaded:
+        backend = load_backend(uploaded.getvalue())
+    elif use_example:
+        ex = Path("data/HabitatBackend_WITH_STOCK.xlsx")
+        if ex.exists():
+            with ex.open("rb") as f:
+                backend = load_backend(f.read())
+    
+    if backend is None:
+        st.warning("Upload your backend workbook to continue.", icon="⚠️")
+        st.stop()
 
 # ================= BANK_KEY normalisation =================
 def make_bank_key_col(df: pd.DataFrame, banks_df: pd.DataFrame) -> pd.DataFrame:
@@ -793,59 +858,160 @@ HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
 )
 
-with st.container(border=True):
-    st.markdown("**Add habitats one by one** (type to search the catalog):")
-    to_delete = []
-    for idx, row in enumerate(st.session_state.demand_rows):
-        c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
-        with c1:
-            st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
-                "Habitat", HAB_CHOICES,
-                index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
-                key=f"hab_{row['id']}",
-                help="Start typing to filter",
-            )
-        with c2:
-            st.session_state.demand_rows[idx]["units"] = st.number_input(
-                "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), key=f"units_{row['id']}"
-            )
-        with c3:
-            if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
-                to_delete.append(row["id"])
+# Tab-based interface for manual vs metric input
+if _HAS_NEW_MODULES:
+    demand_tab1, demand_tab2 = st.tabs(["📝 Manual Entry", "📊 Upload DEFRA Metric"])
     
-    if to_delete:
-        st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
-        st.rerun()
+    with demand_tab1:
+        st.session_state.demand_source = "manual"
+        with st.container(border=True):
+            st.markdown("**Add habitats one by one** (type to search the catalog):")
+            to_delete = []
+            for idx, row in enumerate(st.session_state.demand_rows):
+                c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
+                with c1:
+                    st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
+                        "Habitat", HAB_CHOICES,
+                        index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                        key=f"hab_{row['id']}",
+                        help="Start typing to filter",
+                    )
+                with c2:
+                    st.session_state.demand_rows[idx]["units"] = st.number_input(
+                        "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), key=f"units_{row['id']}"
+                    )
+                with c3:
+                    if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
+                        to_delete.append(row["id"])
+            
+            if to_delete:
+                st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
+                st.rerun()
 
-    cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
-    with cc1:
-        if st.button("➕ Add habitat", key="add_hab_btn"):
-            st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
-            )
-            st.session_state._next_row_id += 1
-            st.rerun()
-    with cc2:
-        if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
-                     help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
-            st.session_state.demand_rows.append(
-                {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
-            )
-            st.session_state._next_row_id += 1
-            st.rerun()
-    with cc3:
-        if st.button("🧹 Clear all", key="clear_all_btn"):
-            st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
-            st.session_state._next_row_id = 2
+            cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
+            with cc1:
+                if st.button("➕ Add habitat", key="add_hab_btn"):
+                    st.session_state.demand_rows.append(
+                        {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                    )
+                    st.session_state._next_row_id += 1
+                    st.rerun()
+            with cc2:
+                if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
+                             help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
+                    st.session_state.demand_rows.append(
+                        {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
+                    )
+                    st.session_state._next_row_id += 1
+                    st.rerun()
+            with cc3:
+                if st.button("🧹 Clear all", key="clear_all_btn"):
+                    st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
+                    st.session_state._next_row_id = 2
+                    st.rerun()
+    
+    with demand_tab2:
+        st.session_state.demand_source = "metric"
+        st.markdown("**Upload a DEFRA BNG Metric spreadsheet** to automatically extract habitat requirements:")
+        
+        metric_file = st.file_uploader(
+            "Upload DEFRA BNG Metric (.xlsx)", 
+            type=["xlsx"], 
+            key="metric_upload",
+            help="Upload a completed DEFRA BNG Metric calculation spreadsheet"
+        )
+        
+        if metric_file:
+            try:
+                parser = DEFRAMetricParser(metric_file.getvalue())
+                parsed_df = parser.parse()
+                st.session_state.metric_parsed_df = parsed_df
+                
+                if not parsed_df.empty:
+                    st.success(f"✅ Successfully parsed {len(parsed_df)} habitat requirements from metric")
+                    
+                    # Show summary
+                    summary = parser.get_summary()
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Area Units", f"{summary.get('area', 0):.2f}")
+                    with col2:
+                        st.metric("Hedgerow Units", f"{summary.get('hedgerow', 0):.2f}")
+                    with col3:
+                        st.metric("Watercourse Units", f"{summary.get('watercourse', 0):.2f}")
+                    
+                    # Show parsed requirements
+                    st.dataframe(parsed_df, use_container_width=True, hide_index=True)
+                else:
+                    st.warning("No habitat requirements found in the metric spreadsheet. Please check the format.")
+                    st.session_state.metric_parsed_df = None
+            except Exception as e:
+                st.error(f"Error parsing metric spreadsheet: {e}")
+                st.session_state.metric_parsed_df = None
+        else:
+            st.info("Upload a DEFRA BNG Metric spreadsheet to extract requirements automatically")
+else:
+    # Original manual-only interface
+    with st.container(border=True):
+        st.markdown("**Add habitats one by one** (type to search the catalog):")
+        to_delete = []
+        for idx, row in enumerate(st.session_state.demand_rows):
+            c1, c2, c3 = st.columns([0.62, 0.28, 0.10])
+            with c1:
+                st.session_state.demand_rows[idx]["habitat_name"] = st.selectbox(
+                    "Habitat", HAB_CHOICES,
+                    index=(HAB_CHOICES.index(row["habitat_name"]) if row["habitat_name"] in HAB_CHOICES else 0),
+                    key=f"hab_{row['id']}",
+                    help="Start typing to filter",
+                )
+            with c2:
+                st.session_state.demand_rows[idx]["units"] = st.number_input(
+                    "Units", min_value=0.0, step=0.01, value=float(row.get("units", 0.0)), key=f"units_{row['id']}"
+                )
+            with c3:
+                if st.button("🗑️", key=f"del_{row['id']}", help="Remove this row"):
+                    to_delete.append(row["id"])
+        
+        if to_delete:
+            st.session_state.demand_rows = [r for r in st.session_state.demand_rows if r["id"] not in to_delete]
             st.rerun()
 
-total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
+        cc1, cc2, cc3 = st.columns([0.33, 0.33, 0.34])
+        with cc1:
+            if st.button("➕ Add habitat", key="add_hab_btn"):
+                st.session_state.demand_rows.append(
+                    {"id": st.session_state._next_row_id, "habitat_name": HAB_CHOICES[0] if HAB_CHOICES else "", "units": 0.0}
+                )
+                st.session_state._next_row_id += 1
+                st.rerun()
+        with cc2:
+            if st.button("➕ Net Gain (Low-equivalent)", key="add_ng_btn",
+                         help="Adds a 'Net Gain' line. Trades like Low distinctiveness (can source from any habitat)."):
+                st.session_state.demand_rows.append(
+                    {"id": st.session_state._next_row_id, "habitat_name": NET_GAIN_LABEL, "units": 0.0}
+                )
+                st.session_state._next_row_id += 1
+                st.rerun()
+        with cc3:
+            if st.button("🧹 Clear all", key="clear_all_btn"):
+                st.session_state.demand_rows = [{"id": 1, "habitat_name": "", "units": 0.0}]
+                st.session_state._next_row_id = 2
+                st.rerun()
+
+# Build demand_df based on source
+if st.session_state.demand_source == "metric" and st.session_state.metric_parsed_df is not None:
+    # Use metric-parsed data
+    demand_df = st.session_state.metric_parsed_df[["habitat_name", "units_required"]].copy()
+    total_units = float(demand_df["units_required"].sum())
+else:
+    # Use manual entry
+    total_units = sum([float(r.get("units", 0.0) or 0.0) for r in st.session_state.demand_rows])
+    demand_df = pd.DataFrame(
+        [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
+         for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
+    )
+
 st.metric("Total units", f"{total_units:.2f}")
-
-demand_df = pd.DataFrame(
-    [{"habitat_name": sstr(r["habitat_name"]), "units_required": float(r.get("units", 0.0) or 0.0)}
-     for r in st.session_state.demand_rows if sstr(r["habitat_name"]) and float(r.get("units", 0.0) or 0.0) > 0]
-)
 
 # Hedgerow guard
 if not demand_df.empty:
@@ -1671,6 +1837,21 @@ if run:
         st.dataframe(alloc_df, use_container_width=True)
         if "price_source" in alloc_df.columns:
             st.caption("Note: `price_source='group-proxy'` or `any-low-proxy` indicate proxy pricing rules.")
+        
+        # ---------- Flow Diagram Visualization ----------
+        if _HAS_NEW_MODULES:
+            st.markdown("#### Trading Flow Visualization")
+            try:
+                flow_html = create_flow_diagram(alloc_df)
+                if flow_html:
+                    st.components.v1.html(flow_html, height=650, scrolling=True)
+                else:
+                    # Fallback to table view
+                    flow_table = create_simple_flow_table(alloc_df)
+                    if not flow_table.empty:
+                        st.dataframe(flow_table, use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.info(f"Flow visualization not available: {e}")
 
         # ---------- Site/Habitat totals (effective units, with accurate split pricing) ----------
         st.markdown("#### Site/Habitat totals (effective units)")

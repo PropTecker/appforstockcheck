@@ -6,3 +6,4 @@ folium>=0.16
 openpyxl>=3.1
 xlsxwriter>=3.2
 pulp>=2.7   # optional; app falls back to greedy if not present
+plotly>=5.0   # for flow diagram visualization
