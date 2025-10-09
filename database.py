@@ -96,7 +96,7 @@ class BNGDatabase:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS distinctiveness_levels (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                level_name TEXT UNIQUE NOT NULL,
+                distinctiveness_name TEXT UNIQUE NOT NULL,
                 level_value INTEGER NOT NULL
             )
         """)

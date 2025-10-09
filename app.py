@@ -2331,23 +2331,23 @@ if (st.session_state.get("optimization_complete", False) and
         
         # Email generation
         # Enhanced email generation with .eml file creation and improved mailto options:
-st.markdown("**📧 Email Generation:**")
+        st.markdown("**📧 Email Generation:**")
 
-col1, col2, col3 = st.columns([1, 1, 1])
+        col1, col2, col3 = st.columns([1, 1, 1])
 
-with col1:
-    if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
-        st.code(email_html, language="html")
-        st.success("Email HTML generated! Copy the code above and paste into your email client.")
+        with col1:
+            if st.button("📋 Copy Email HTML", help="Copy the email HTML to clipboard", key="copy_email_html_btn"):
+                st.code(email_html, language="html")
+                st.success("Email HTML generated! Copy the code above and paste into your email client.")
 
-with col2:
-    # Create .eml file content
-    import base64
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    
-    subject = f"RE: BNG Units for site at {location} - {ref_number}"
-    total_with_admin = session_total_cost + ADMIN_FEE_GBP
+        with col2:
+            # Create .eml file content
+            import base64
+            from email.mime.multipart import MIMEMultipart
+            from email.mime.text import MIMEText
+            
+            subject = f"RE: BNG Units for site at {location} - {ref_number}"
+            total_with_admin = session_total_cost + ADMIN_FEE_GBP
     
     # Create email message
     msg = MIMEMultipart('alternative')
