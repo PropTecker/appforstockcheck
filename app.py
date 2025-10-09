@@ -135,8 +135,13 @@ def require_login():
         ok = st.form_submit_button("Sign in")
     
     if ok:
-        valid_u = st.secrets.get("auth", {}).get("username", DEFAULT_USER)
-        valid_p = st.secrets.get("auth", {}).get("password", DEFAULT_PASS)
+        try:
+            valid_u = st.secrets.get("auth", {}).get("username", DEFAULT_USER)
+            valid_p = st.secrets.get("auth", {}).get("password", DEFAULT_PASS)
+        except Exception:
+            # Fallback to defaults if secrets not configured
+            valid_u = DEFAULT_USER
+            valid_p = DEFAULT_PASS
         if u == valid_u and p == valid_p:
             st.session_state.auth_ok = True
             st.rerun()
