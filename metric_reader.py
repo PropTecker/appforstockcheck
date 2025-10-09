@@ -49,7 +49,7 @@ class DEFRAMetricReader:
         """Parse area habitat requirements from metric file"""
         requirements = []
         
-        if 'area' not in self.metric_data:
+        if self.metric_data is None or 'area' not in self.metric_data:
             return requirements
         
         df = self.metric_data['area']
@@ -92,7 +92,7 @@ class DEFRAMetricReader:
         """Parse hedgerow requirements from metric file"""
         requirements = []
         
-        if 'hedgerow' not in self.metric_data:
+        if self.metric_data is None or 'hedgerow' not in self.metric_data:
             return requirements
         
         df = self.metric_data['hedgerow']
@@ -137,7 +137,7 @@ class DEFRAMetricReader:
         """Parse watercourse requirements from metric file"""
         requirements = []
         
-        if 'watercourse' not in self.metric_data:
+        if self.metric_data is None or 'watercourse' not in self.metric_data:
             return requirements
         
         df = self.metric_data['watercourse']
