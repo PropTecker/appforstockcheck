@@ -32,6 +32,19 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
+The app will open in your browser at http://localhost:8501
+
+### Quick Demo with Sample Data
+
+1. Start the app: `streamlit run app.py`
+2. In the sidebar:
+   - Select "Database (SQL)" as backend source
+   - Enter path: `data/sample_bng_backend.db`
+   - Upload metric file: `data/sample_defra_metric.xlsx`
+3. Click "Import from Metric" to auto-populate habitat requirements
+4. Enter a postcode (e.g., "SW1A 1AA") and click "Locate"
+5. Click "Optimise now" to see bank allocations and map visualization
+
 ## Database Setup
 
 ### Option 1: Initialize from Excel (Recommended)

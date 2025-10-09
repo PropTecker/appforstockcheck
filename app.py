@@ -1,10 +1,11 @@
-# app.py — BNG Optimiser (Standalone), v9.12
-# Changes in v9.12:
-# - Fixed map disappearing on optimise
-# - Improved UI responsiveness
-# - Better state management
-# - Fixed flickering issues
-# - Enhanced error handling
+# app.py — BNG Optimiser with DEFRA Metric Reader, v10.0
+# Changes in v10.0:
+# - Combined BNG Optimiser with DEFRA BNG Metric Reader functionality
+# - Added SQL database backend (SQLite) as alternative to Excel
+# - Added DEFRA BNG Metric file parsing (area, hedgerow, watercourse)
+# - Auto-import habitat requirements from metric files
+# - Maintained all original visualization and reporting features
+# - Previous v9.12 fixes: map stability, UI responsiveness, state management
 
 import json
 import re
@@ -49,8 +50,9 @@ except Exception:
     _HAS_PULP = False
 
 # ================= Page Setup =================
-st.set_page_config(page_title="BNG Optimiser (Standalone)", page_icon="🧭", layout="wide")
-st.markdown("<h2>BNG Optimiser — Standalone</h2>", unsafe_allow_html=True)
+st.set_page_config(page_title="BNG Optimiser with DEFRA Metric Reader", page_icon="🧭", layout="wide")
+st.markdown("<h2>BNG Optimiser with DEFRA Metric Reader</h2>", unsafe_allow_html=True)
+st.caption("v10.0 - Combined optimisation with database backend and DEFRA BNG Metric parsing")
 
 # ================= Initialize Session State =================
 def init_session_state():
