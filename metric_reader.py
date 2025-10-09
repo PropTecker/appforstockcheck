@@ -25,10 +25,11 @@ class DEFRAMetricReader:
             self.metric_data = {}
             
             # Common sheet names in DEFRA BNG Metric files
+            # Order matters - more specific patterns first
             sheet_patterns = {
-                'area': ['A-1', 'A1', 'Baseline', 'Site Habitat Baseline'],
-                'hedgerow': ['B-1', 'B1', 'Hedgerow', 'Hedgerow Baseline'],
-                'watercourse': ['C-1', 'C1', 'Watercourse', 'River Baseline'],
+                'hedgerow': ['B-1', 'B1', 'Hedgerow'],
+                'watercourse': ['C-1', 'C1', 'Watercourse', 'River'],
+                'area': ['A-1', 'A1', 'Site Habitat', 'Area Habitat'],
             }
             
             # Try to find and load relevant sheets
@@ -102,9 +103,10 @@ class DEFRAMetricReader:
             term in str(col).lower() for term in ['hedge', 'type', 'description']
         )]
         
-        unit_cols = [col for col in df.columns if any(
-            term in str(col).lower() for term in ['unit', 'biodiversity', 'length']
-        )]
+        # Prioritize "biodiversity units" over other unit columns
+        unit_cols = [col for col in df.columns if 'biodiversity' in str(col).lower() and 'unit' in str(col).lower()]
+        if not unit_cols:
+            unit_cols = [col for col in df.columns if 'unit' in str(col).lower()]
         
         if not habitat_cols or not unit_cols:
             return requirements
@@ -147,9 +149,10 @@ class DEFRAMetricReader:
             term in str(col).lower() for term in ['water', 'river', 'type', 'description']
         )]
         
-        unit_cols = [col for col in df.columns if any(
-            term in str(col).lower() for term in ['unit', 'biodiversity', 'length']
-        )]
+        # Prioritize "biodiversity units" over other unit columns
+        unit_cols = [col for col in df.columns if 'biodiversity' in str(col).lower() and 'unit' in str(col).lower()]
+        if not unit_cols:
+            unit_cols = [col for col in df.columns if 'unit' in str(col).lower()]
         
         if not habitat_cols or not unit_cols:
             return requirements
