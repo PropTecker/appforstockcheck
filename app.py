@@ -24,6 +24,10 @@ except Exception:
     folium_static = None
 import folium
 
+# Import new modules
+from database import BNGDatabase
+from metric_reader import DEFRAMetricReader
+
 # ================= Config / constants =================
 ADMIN_FEE_GBP = 500.0
 SINGLE_BANK_SOFT_PCT = 0.01
@@ -295,16 +299,51 @@ def select_contract_size(total_units: float, present: List[str]) -> str:
 # ================= Sidebar: backend =================
 with st.sidebar:
     st.subheader("Backend")
-    uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"])
-    if not uploaded:
-        st.info("Or use an example backend in ./data", icon="ℹ️")
-    use_example = st.checkbox("Use example backend from ./data",
-                              value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()))
+    
+    # Backend mode selection
+    backend_mode = st.radio(
+        "Backend source:",
+        ["Database (SQL)", "Excel Upload"],
+        help="Use SQL database for persistent storage or upload Excel file"
+    )
+    
+    if backend_mode == "Excel Upload":
+        uploaded = st.file_uploader("Upload backend workbook (.xlsx)", type=["xlsx"])
+        if not uploaded:
+            st.info("Or use an example backend in ./data", icon="ℹ️")
+        use_example = st.checkbox("Use example backend from ./data",
+                                  value=bool(Path("data/HabitatBackend_WITH_STOCK.xlsx").exists()))
+    else:
+        uploaded = None
+        use_example = False
+        db_path = st.text_input("Database path", value="bng_backend.db")
+        if st.button("Initialize/Reset DB from Excel"):
+            excel_file = st.file_uploader("Select Excel file to import", type=["xlsx"], key="db_import")
+            if excel_file:
+                try:
+                    db = BNGDatabase(db_path)
+                    # Save uploaded file temporarily
+                    with open("/tmp/temp_backend.xlsx", "wb") as f:
+                        f.write(excel_file.getvalue())
+                    db.load_from_excel("/tmp/temp_backend.xlsx")
+                    db.close()
+                    st.success("Database initialized from Excel file!")
+                except Exception as e:
+                    st.error(f"Error initializing database: {e}")
+    
     quotes_hold_policy = st.selectbox(
         "Quotes policy for stock availability",
         ["Ignore quotes (default)", "Quotes hold 100%", "Quotes hold 50%"],
         index=0,
         help="How to treat 'quoted' units when computing quantity_available."
+    )
+    
+    # Metric file upload
+    st.subheader("DEFRA BNG Metric")
+    metric_file = st.file_uploader(
+        "Upload DEFRA BNG Metric (.xlsx)",
+        type=["xlsx"],
+        help="Upload a DEFRA BNG Metric spreadsheet to auto-populate habitat requirements"
     )
 
 @st.cache_data
@@ -323,16 +362,32 @@ def load_backend(xls_bytes) -> Dict[str, pd.DataFrame]:
     return backend
 
 backend = None
-if uploaded:
-    backend = load_backend(uploaded.getvalue())
-elif use_example:
-    ex = Path("data/HabitatBackend_WITH_STOCK.xlsx")
-    if ex.exists():
-        with ex.open("rb") as f:
-            backend = load_backend(f.read())
+
+# Load backend based on selected mode
+if backend_mode == "Database (SQL)":
+    try:
+        db = BNGDatabase(db_path if 'db_path' in locals() else "bng_backend.db")
+        backend = db.get_backend_dict()
+        # Check if database is empty
+        if backend["Banks"].empty:
+            st.sidebar.warning("Database is empty. Please initialize it with an Excel file.", icon="⚠️")
+        else:
+            st.sidebar.success(f"✓ Loaded from database ({len(backend['Banks'])} banks)")
+    except Exception as e:
+        st.sidebar.error(f"Error loading database: {e}")
+        backend = None
+else:
+    # Excel mode (original behavior)
+    if uploaded:
+        backend = load_backend(uploaded.getvalue())
+    elif use_example:
+        ex = Path("data/HabitatBackend_WITH_STOCK.xlsx")
+        if ex.exists():
+            with ex.open("rb") as f:
+                backend = load_backend(f.read())
 
 if backend is None:
-    st.warning("Upload your backend workbook to continue.", icon="⚠️")
+    st.warning("Upload your backend workbook or configure database to continue.", icon="⚠️")
     st.stop()
 
 # ================= BANK_KEY normalisation =================
@@ -792,6 +847,52 @@ NET_GAIN_LABEL = "Net Gain (Low-equivalent)"
 HAB_CHOICES = sorted(
     [sstr(x) for x in backend["HabitatCatalog"]["habitat_name"].dropna().unique().tolist()] + [NET_GAIN_LABEL]
 )
+
+# Process metric file if uploaded
+if metric_file is not None:
+    try:
+        metric_reader = DEFRAMetricReader()
+        if metric_reader.load_metric_file(metric_file.getvalue()):
+            st.info("📊 DEFRA BNG Metric file loaded successfully!", icon="✅")
+            
+            # Show import button
+            col1, col2 = st.columns([1, 3])
+            with col1:
+                if st.button("Import from Metric", type="primary"):
+                    # Get requirements from metric
+                    requirements = metric_reader.get_all_requirements()
+                    
+                    # Clear existing demand rows and add metric requirements
+                    st.session_state.demand_rows = []
+                    next_id = 1
+                    
+                    for req in requirements:
+                        habitat_name = req['habitat_name']
+                        units = req['units']
+                        
+                        # Try to match habitat name with catalog
+                        # For now, use as-is (can be manually adjusted)
+                        st.session_state.demand_rows.append({
+                            "id": next_id,
+                            "habitat_name": habitat_name if habitat_name in HAB_CHOICES else "",
+                            "units": units
+                        })
+                        next_id += 1
+                    
+                    st.session_state._next_row_id = next_id
+                    st.success(f"Imported {len(requirements)} habitat requirements from metric file")
+                    st.rerun()
+            
+            with col2:
+                summary = metric_reader.get_summary()
+                st.caption(
+                    f"Metric contains: {summary['area_habitats']} area habitats "
+                    f"({summary['area_units']:.2f} units), "
+                    f"{summary['hedgerow_habitats']} hedgerow ({summary['hedgerow_units']:.2f} units), "
+                    f"{summary['watercourse_habitats']} watercourse ({summary['watercourse_units']:.2f} units)"
+                )
+    except Exception as e:
+        st.error(f"Error processing metric file: {e}")
 
 with st.container(border=True):
     st.markdown("**Add habitats one by one** (type to search the catalog):")
